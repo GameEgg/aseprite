@@ -356,6 +356,8 @@ static void ase_file_prepare_header(FILE* f, dio::AsepriteHeader* header, const 
   header->ncolors = sprite->palette(firstFrame)->size();
   header->pixel_width = sprite->pixelRatio().w;
   header->pixel_height = sprite->pixelRatio().h;
+  header->pivot_x_percent = static_cast<int16_t>(100 * sprite->pivotX());
+  header->pivot_y_percent = static_cast<int16_t>(100 * sprite->pivotY());
 }
 
 static void ase_file_write_header(FILE* f, dio::AsepriteHeader* header)
@@ -379,6 +381,8 @@ static void ase_file_write_header(FILE* f, dio::AsepriteHeader* header)
   fputw(header->ncolors, f);
   fputc(header->pixel_width, f);
   fputc(header->pixel_height, f);
+  fputw(header->pivot_x_percent, f);
+  fputw(header->pivot_y_percent, f);
 
   fseek(f, header->pos+128, SEEK_SET);
 }

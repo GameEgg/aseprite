@@ -772,7 +772,10 @@ void DocExporter::createDataFile(const Samples& samples, std::ostream& os, Image
        << "    \"sourceSize\": { "
        << "\"w\": " << srcSize.w << ", "
        << "\"h\": " << srcSize.h << " },\n"
-       << "    \"duration\": " << sample.sprite()->frameDuration(sample.frame()) << "\n"
+       << "    \"duration\": " << sample.sprite()->frameDuration(sample.frame()) << ",\n"
+       << "    \"pivot\": {"
+       << "\"x\": " << sample.sprite()->pivotX() << ", "
+       << "\"y\": " << sample.sprite()->pivotY() << " }\n"
        << "   }";
 
     if (++it != samples.end())

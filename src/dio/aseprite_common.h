@@ -63,6 +63,8 @@ struct AsepriteHeader {
   uint16_t ncolors;
   uint8_t pixel_width;
   uint8_t pixel_height;
+  int16_t pivot_x_percent;
+  int16_t pivot_y_percent;
 };
 
 struct AsepriteFrameHeader {

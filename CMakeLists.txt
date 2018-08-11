@@ -9,6 +9,9 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF) # We use -std=c++11 instead of -std=gnu++11 in macOS
 
+set(CMAKE_C_COMPILER_WORKS 1 CACHE INTERNAL "")
+set(CMAKE_CXX_COMPILER_WORKS 1 CACHE INTERNAL "")
+
 if(COMMAND cmake_policy)
   # CMP0003: Libraries linked via full path no longer produce linker search paths.
   #cmake_policy(SET CMP0003 NEW)
@@ -50,7 +53,6 @@ endif()
 # TRUE by default
 set(BUILD_SHARED_LIBS off)
 
-enable_testing()
 
 ######################################################################
 # Options (these can be specified in cmake command line or modifying
