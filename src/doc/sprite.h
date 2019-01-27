@@ -1,4 +1,5 @@
 // Aseprite Document Library
+// Copyright (c) 2018 Igara Studio S.A.
 // Copyright (c) 2001-2018 David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -55,11 +56,11 @@ namespace doc {
     ////////////////////////////////////////
     // Constructors/Destructor
 
-    Sprite(PixelFormat format, int width, int height, int ncolors);
-    Sprite(const ImageSpec& spec, int ncolors);
+    Sprite(const ImageSpec& spec, int ncolors = 256);
     virtual ~Sprite();
 
-    static Sprite* createBasicSprite(PixelFormat format, int width, int height, int ncolors);
+    static Sprite* createBasicSprite(const ImageSpec& spec,
+                                     const int ncolors = 256);
 
     ////////////////////////////////////////
     // Main properties
@@ -70,6 +71,7 @@ namespace doc {
     void setDocument(Document* doc) { m_document = doc; }
 
     PixelFormat pixelFormat() const { return (PixelFormat)m_spec.colorMode(); }
+    ColorMode colorMode() const { return m_spec.colorMode(); }
     const PixelRatio& pixelRatio() const { return m_pixelRatio; }
     gfx::Size size() const { return m_spec.size(); }
     gfx::Rect bounds() const { return m_spec.bounds(); }
@@ -78,12 +80,17 @@ namespace doc {
     gfx::PointF pivot() const { return m_pivot; }
     double pivotX() const { return m_pivot.x; }
     double pivotY() const { return m_pivot.y; }
+    const gfx::ColorSpacePtr& colorSpace() const { return m_spec.colorSpace(); }
 
     void setPixelFormat(PixelFormat format);
     void setPixelRatio(const PixelRatio& pixelRatio);
     void setSize(int width, int height);
     void setPivot(double x, double y);
     void setPivot(gfx::PointF pivot);
+    void setColorSpace(const gfx::ColorSpacePtr& colorSpace);
+
+    // Returns true if the sprite has a background layer and it's visible
+    bool isOpaque() const;
 
     // Returns true if the rendered images will contain alpha values less
     // than 255. Only RGBA and Grayscale images without background needs
@@ -102,6 +109,7 @@ namespace doc {
     LayerGroup* root() const { return m_root; }
     LayerImage* backgroundLayer() const;
     Layer* firstBrowsableLayer() const;
+    Layer* firstLayer() const;
     layer_t allLayersCount() const;
     bool hasVisibleReferenceLayers() const;
 

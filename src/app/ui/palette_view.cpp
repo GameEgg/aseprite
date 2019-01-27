@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -21,14 +22,15 @@
 #include "app/ui/skin/skin_theme.h"
 #include "app/ui/status_bar.h"
 #include "app/util/clipboard.h"
+#include "base/bind.h"
 #include "base/convert_to.h"
 #include "doc/image.h"
 #include "doc/palette.h"
 #include "doc/remap.h"
 #include "gfx/color.h"
 #include "gfx/point.h"
-#include "she/font.h"
-#include "she/surface.h"
+#include "os/font.h"
+#include "os/surface.h"
 #include "ui/graphics.h"
 #include "ui/manager.h"
 #include "ui/message.h"
@@ -65,7 +67,9 @@ PaletteView::PaletteView(bool editable, PaletteViewStyle style, PaletteViewDeleg
   setFocusStop(true);
   setDoubleBuffered(true);
 
-  m_conn = App::instance()->PaletteChange.connect(&PaletteView::onAppPaletteChange, this);
+  m_palConn = App::instance()->PaletteChange.connect(&PaletteView::onAppPaletteChange, this);
+  m_csConn = App::instance()->ColorSpaceChange.connect(
+    base::Bind<void>(&PaletteView::invalidate, this));
 
   InitTheme.connect(
     [this]{
@@ -525,7 +529,7 @@ void PaletteView::onPaint(ui::PaintEvent& ev)
   // Handle to resize palette
 
   if (m_editable && !dragging) {
-    she::Surface* handle = theme->parts.palResize()->bitmap(0);
+    os::Surface* handle = theme->parts.palResize()->bitmap(0);
     gfx::Rect box = getPaletteEntryBounds(palSize);
     g->drawRgbaSurface(handle,
                        box.x+box.w/2-handle->width()/2,
@@ -563,7 +567,7 @@ void PaletteView::onPaint(ui::PaintEvent& ev)
         gfx::Color gfxColor = drawEntry(g, box2, i); // Draw color entry
 
         gfx::Color neg = color_utils::blackandwhite_neg(gfxColor);
-        she::Font* minifont = theme->getMiniFont();
+        os::Font* minifont = theme->getMiniFont();
         std::string text = base::convert_to<std::string>(k);
         g->setFont(minifont);
         g->drawText(text, neg, gfx::ColorNone,
@@ -908,7 +912,7 @@ void PaletteView::setStatusBar()
   StatusBar* statusBar = StatusBar::instance();
 
   if (m_hot.part == Hit::NONE) {
-    statusBar->clearText();
+    statusBar->showDefaultText();
     return;
   }
 
@@ -926,7 +930,7 @@ void PaletteView::setStatusBar()
           0, "", app::Color::fromIndex(i));
       }
       else {
-        statusBar->clearText();
+        statusBar->showDefaultText();
       }
       break;
 
@@ -945,7 +949,7 @@ void PaletteView::setStatusBar()
           destIndex, newPalSize);
       }
       else {
-        statusBar->clearText();
+        statusBar->showDefaultText();
       }
       break;
 
@@ -959,7 +963,7 @@ void PaletteView::setStatusBar()
           newPalSize);
       }
       else {
-        statusBar->clearText();
+        statusBar->showDefaultText();
       }
       break;
   }

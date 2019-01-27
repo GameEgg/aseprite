@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -24,7 +25,7 @@
 #include "app/modules/editors.h"
 #include "app/modules/palettes.h"
 #include "app/pref/preferences.h"
-#include "app/transaction.h"
+#include "app/tx.h"
 #include "app/ui/editor/editor.h"
 #include "app/ui/editor/editor_customization_delegate.h"
 #include "app/ui/editor/editor_view.h"
@@ -357,7 +358,8 @@ bool DocView::onProcessMessage(Message* msg)
 {
   switch (msg->type()) {
     case kFocusEnterMessage:
-      m_editor->requestFocus();
+      if (msg->recipient() != m_editor)
+        m_editor->requestFocus();
       break;
   }
   return Box::onProcessMessage(msg);
@@ -442,6 +444,12 @@ void DocView::onAddCel(DocEvent& ev)
 
 void DocView::onRemoveCel(DocEvent& ev)
 {
+  // This can happen when we apply a filter that clear the whole cel
+  // and then the cel is removed in a background/job
+  // thread. (e.g. applying a convolution matrix)
+  if (!ui::is_ui_thread())
+    return;
+
   UIContext::instance()->notifyActiveSiteChanged();
 }
 
@@ -559,19 +567,19 @@ bool DocView::onClear(Context* ctx)
     return false;
 
   {
-    Transaction transaction(writer.context(), "Clear");
-    transaction.execute(new cmd::ClearMask(writer.cel()));
+    Tx tx(writer.context(), "Clear");
+    tx(new cmd::ClearMask(writer.cel()));
 
     // If the cel wasn't deleted by cmd::ClearMask, we trim it.
     if (writer.cel() &&
         writer.cel()->layer()->isTransparent())
-      transaction.execute(new cmd::TrimCel(writer.cel()));
+      tx(new cmd::TrimCel(writer.cel()));
 
     if (visibleMask &&
         !Preferences::instance().selection.keepSelectionAfterClear())
-      transaction.execute(new cmd::DeselectMask(document));
+      tx(new cmd::DeselectMask(document));
 
-    transaction.commit();
+    tx.commit();
   }
 
   if (visibleMask)

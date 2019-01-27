@@ -24,6 +24,10 @@
         <dim id="palette_outline_width" value="3" />
         <dim id="color_slider_height" value="14" />
         <dim id="timeline_base_size" value="12" />
+        <dim id="color_bar_buttons_height" value="16" />
+        <dim id="context_bar_height" value="18" />
+        <dim id="brush_type_width" value="16" />
+        <dim id="color_selector_bar_size" value="8" />
     </dimensions>
     <colors>
         <color id="text" value="#000000" />
@@ -236,7 +240,6 @@
         <part id="ani_stop" x="168" y="192" w="5" h="5" />
         <part id="ani_next" x="176" y="192" w="5" h="5" />
         <part id="ani_last" x="184" y="192" w="5" h="5" />
-        <part id="pal_edit" x="144" y="200" w="5" h="5" />
         <part id="pal_sort" x="152" y="200" w="5" h="5" />
         <part id="pal_presets" x="160" y="200" w="5" h="5" />
         <part id="pal_options" x="168" y="200" w="5" h="5" />
@@ -244,6 +247,7 @@
         <part id="selection_replace" x="176" y="160" w="7" h="7" />
         <part id="selection_add" x="184" y="160" w="7" h="7" />
         <part id="selection_subtract" x="192" y="160" w="7" h="7" />
+        <part id="selection_intersect" x="200" y="160" w="7" h="7" />
         <part id="unpinned" x="192" y="144" w="8" h="8" />
         <part id="pinned" x="200" y="144" w="8" h="8" />
         <part id="drop_down_button_left_normal" x="48" y="32" w1="3" w2="2" w3="3" h1="4" h2="6" h3="6" />
@@ -397,6 +401,7 @@
         <part id="aseprite_face" x="0" y="272" w="28" h="30" />
         <part id="aseprite_face_mouse" x="28" y="272" w="28" h="30" />
         <part id="aseprite_face_pushed" x="56" y="272" w="28" h="30" />
+        <part id="icon_aspect_ratio" x="256" y="264" w="10" h="8" />
     </parts>
     <styles>
         <style id="box" />
@@ -529,6 +534,7 @@
             <background-border part="button_hot" state="mouse" />
             <background-border part="button_focused" state="focus" />
             <background-border part="button_selected" state="selected" />
+            <background-border part="button_normal" state="mouse disabled" />
             <text color="button_normal_text" />
             <text color="button_hot_text" state="mouse" />
             <text color="button_selected_text" state="selected" />
@@ -547,6 +553,7 @@
             <icon part="check_normal" align="left middle" x="2" />
             <icon part="check_selected" align="left middle" x="2" state="selected" />
             <icon part="check_disabled" align="left middle" x="2" state="disabled" />
+            <icon part="check_selected" align="left middle" x="2" state="disabled selected" />
         </style>
         <style id="radio_button" border="2">
             <background color="radio_hot_face" state="mouse focus" />
@@ -647,6 +654,15 @@
         </style>
         <style id="recent_file_detail" border="2" border-left="0" extends="recent_file">
             <text color="disabled" align="left" x="2" />
+        </style>
+        <style id="recent_file_pin">
+          <background color="background" />
+          <background color="menuitem_hot_face" state="mouse" />
+          <background color="listitem_selected_face" state="selected" />
+          <icon part="unpinned" align="center middle" color="text" />
+          <icon part="unpinned" align="center middle" color="listitem_selected_text" state="selected" />
+          <icon part="pinned" align="center middle" color="text" state="focus" />
+          <icon part="pinned" align="center middle" color="listitem_selected_text" state="focus selected" />
         </style>
         <style id="news_item" border="2">
             <background color="background" />

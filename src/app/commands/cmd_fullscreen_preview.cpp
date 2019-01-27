@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -10,7 +11,6 @@
 
 #include "ui/ui.h"
 
-#include "app/app.h"
 #include "app/commands/command.h"
 #include "app/commands/commands.h"
 #include "app/context.h"
@@ -21,14 +21,14 @@
 #include "app/ui/editor/editor_render.h"
 #include "app/ui/keyboard_shortcuts.h"
 #include "app/ui/status_bar.h"
-#include "doc/conversion_she.h"
+#include "doc/conversion_to_surface.h"
 #include "doc/image.h"
 #include "doc/palette.h"
 #include "doc/primitives.h"
 #include "doc/sprite.h"
-#include "she/scoped_handle.h"
-#include "she/surface.h"
-#include "she/system.h"
+#include "os/scoped_handle.h"
+#include "os/surface.h"
+#include "os/system.h"
 
 #include <cstring>
 
@@ -53,7 +53,7 @@ public:
     , m_proj(editor->projection())
     , m_index_bg_color(-1)
     , m_doublebuf(Image::create(IMAGE_RGB, ui::display_w(), ui::display_h()))
-    , m_doublesur(she::instance()->createRgbaSurface(ui::display_w(), ui::display_h())) {
+    , m_doublesur(os::instance()->createRgbaSurface(ui::display_w(), ui::display_h())) {
     // Do not use DocWriter (do not lock the document) because we
     // will call other sub-commands (e.g. previous frame, next frame,
     // etc.).
@@ -249,14 +249,13 @@ private:
   int m_index_bg_color;
   std::unique_ptr<Image> m_render;
   std::unique_ptr<Image> m_doublebuf;
-  she::ScopedHandle<she::Surface> m_doublesur;
+  os::ScopedHandle<os::Surface> m_doublesur;
   filters::TiledMode m_tiled;
 };
 
 class FullscreenPreviewCommand : public Command {
 public:
   FullscreenPreviewCommand();
-  Command* clone() const override { return new FullscreenPreviewCommand(*this); }
 
 protected:
   bool onEnabled(Context* context) override;
@@ -285,6 +284,13 @@ void FullscreenPreviewCommand::onExecute(Context* context)
 
   PreviewWindow window(context, editor);
   window.openWindowInForeground();
+
+  // Check that the full screen invalidation code is working
+  // correctly. This check is just in case that some regression is
+  // introduced in ui::Manager() that doesn't handle correctly the
+  // invalidation of the manager when it's fully covered by the closed
+  // window (desktop windows, like PreviewWindow, match this case).
+  ASSERT(editor->manager()->hasFlags(DIRTY));
 }
 
 Command* CommandFactory::createFullscreenPreviewCommand()

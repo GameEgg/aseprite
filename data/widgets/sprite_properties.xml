@@ -1,5 +1,6 @@
 <!-- Aseprite -->
-<!-- Copyright (C) 2001-2016 by David Capello -->
+<!-- Copyright (C) 2018  Igara Studio S.A. -->
+<!-- Copyright (C) 2001-2016  David Capello -->
 <gui>
 <window id="sprite_properties" text="@.title">
   <vbox>
@@ -19,7 +20,9 @@
       <separator text="@.advanced" horizontal="true" cell_hspan="2" />
 
       <label text="@.transparent_color" />
-      <hbox id="transparent_color_placeholder" tooltip="@.transparent_color_tooltip" />
+      <hbox>
+	<hbox id="transparent_color_placeholder" />
+      </hbox>
 
       <label text="@.pixel_ratio" />
       <combobox id="pixel_ratio" cell_align="horizontal">
@@ -28,15 +31,14 @@
 	<listitem text="@.double_high" value="1:2" />
       </combobox>
 
-      <box vertical="true" homogeneous="true">
-        <label text="@.pivot_x" />
-        <label text="@.pivot_y" />
-      </box>
-      <box vertical="true" homogeneous="true" expansive="true">
-        <entry expansive="true" text="0.5" id="pivot_x" maxsize="8" magnet="true"/>
-        <entry expansive="true" text="0.5" id="pivot_y" maxsize="8"/>
-      </box>
-      <box horizontal="true" width="64" />
+      <label text="@.color_profile" />
+      <hbox>
+	<combobox id="color_profile" cell_align="horizontal" expansive="true"></combobox>
+        <hbox homogeneous="true">
+          <button id="assign_color_profile" text="@.assign_color_profile">Assign</button>
+          <button id="convert_color_profile" text="@.convert_color_profile">Convert</button>
+	</hbox>
+      </hbox>
 
     </grid>
     <separator horizontal="true" />

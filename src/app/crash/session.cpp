@@ -38,10 +38,10 @@ Session::Backup::Backup(const std::string& dir)
 
   std::vector<char> buf(1024);
   sprintf(&buf[0], "%s Sprite %dx%d, %d %s: %s",
-    info.format == IMAGE_RGB ? "RGB":
-    info.format == IMAGE_GRAYSCALE ? "Grayscale":
-    info.format == IMAGE_INDEXED ? "Indexed":
-    info.format == IMAGE_BITMAP ? "Bitmap": "Unknown",
+    info.mode == ColorMode::RGB ? "RGB":
+    info.mode == ColorMode::GRAYSCALE ? "Grayscale":
+    info.mode == ColorMode::INDEXED ? "Indexed":
+    info.mode == ColorMode::BITMAP ? "Bitmap": "Unknown",
     info.width, info.height, info.frames,
     info.frames == 1 ? "frame": "frames",
     info.filename.c_str());
@@ -65,6 +65,14 @@ std::string Session::name() const
   base::split_string(name, parts, "-");
 
   if (parts.size() == 3) {
+    if (parts[0].size() == 4+2+2) { // YYYYMMDD -> YYYY-MM-DD
+      parts[0].insert(6, 1, '-');
+      parts[0].insert(4, 1, '-');
+    }
+    if (parts[1].size() == 2+2+2) { // HHMMSS -> HH:MM.SS
+      parts[1].insert(4, 1, '.');
+      parts[1].insert(2, 1, ':');
+    }
     return "Session date: " + parts[0] + " time: " + parts[1] + " (PID " + parts[2] + ")";
   }
   else

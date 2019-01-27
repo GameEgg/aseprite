@@ -1,4 +1,5 @@
 // Aseprite UI Library
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2017  David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -26,8 +27,8 @@
 
 #ifdef DEBUG_SCROLL_EVENTS
 #include "base/thread.h"
-#include "she/display.h"
-#include "she/surface.h"
+#include "os/display.h"
+#include "os/surface.h"
 #endif
 
 #include <queue>
@@ -46,6 +47,7 @@ View::View()
 {
   m_hasBars = true;
 
+  enableFlags(IGNORE_MOUSE);
   setFocusStop(true);
   addChild(&m_viewport);
   setScrollableSize(Size(0, 0));
@@ -233,6 +235,10 @@ void View::onSizeHint(SizeHintEvent& ev)
 
 void View::onSetViewScroll(const gfx::Point& pt)
 {
+  // If the view is not visible, we don't adjust any screen region.
+  if (!isVisible())
+    return;
+
   Point oldScroll = viewScroll();
   Size maxsize = getScrollableSize();
   Size visible = visibleSize();
@@ -330,8 +336,8 @@ void View::onSetViewScroll(const gfx::Point& pt)
       display->flip(gfx::Rect(0, 0, display_w(), display_h()));
     base::this_thread::sleep_for(0.002);
     {
-      she::Surface* surface = display->getSurface();
-      she::SurfaceLock lock(surface);
+      os::Surface* surface = display->getSurface();
+      os::SurfaceLock lock(surface);
       for (const auto& rc : invalidRegion)
         surface->fillRect(gfx::rgba(255, 0, 0), rc);
     }
@@ -346,14 +352,12 @@ void View::onSetViewScroll(const gfx::Point& pt)
 
   // Notify about the new scroll position
   onScrollChange();
-
-  // Generate PaintMessages right now.
-  flushRedraw();
 }
 
 void View::onScrollRegion(ScrollRegionEvent& ev)
 {
-  // Do nothing
+  if (auto viewable = dynamic_cast<ViewableWidget*>(attachedWidget()))
+    viewable->onScrollRegion(ev);
 }
 
 void View::onScrollChange()

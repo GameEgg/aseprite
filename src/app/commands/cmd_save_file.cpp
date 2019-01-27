@@ -88,6 +88,8 @@ private:
 SaveFileBaseCommand::SaveFileBaseCommand(const char* id, CommandFlags flags)
   : Command(id, flags)
 {
+  m_useUI = true;
+  m_ignoreEmpty = false;
 }
 
 void SaveFileBaseCommand::onLoadParams(const Params& params)
@@ -109,6 +111,12 @@ void SaveFileBaseCommand::onLoadParams(const Params& params)
     m_selFrames.clear();
     m_adjustFramesByFrameTag = false;
   }
+
+  std::string useUI = params.get("useUI");
+  m_useUI = (useUI.empty() || (useUI == "true"));
+
+  std::string ignoreEmpty = params.get("ignoreEmpty");
+  m_ignoreEmpty = (ignoreEmpty == "true");
 }
 
 // Returns true if there is a current sprite to save.
@@ -139,7 +147,8 @@ std::string SaveFileBaseCommand::saveAsDialog(
 #ifdef ENABLE_UI
   again:;
     base::paths newfilename;
-    if (!app::show_file_selector(
+    if (!m_useUI ||
+        !app::show_file_selector(
           dlgTitle, filename, exts,
           FileSelectorType::Save,
           newfilename))
@@ -189,7 +198,8 @@ void SaveFileBaseCommand::saveDocumentInBackground(
       context,
       roi,
       filename,
-      m_filenameFormat));
+      m_filenameFormat,
+      m_ignoreEmpty));
   if (!fop)
     return;
 
@@ -228,7 +238,6 @@ void SaveFileBaseCommand::saveDocumentInBackground(
 class SaveFileCommand : public SaveFileBaseCommand {
 public:
   SaveFileCommand();
-  Command* clone() const override { return new SaveFileCommand(*this); }
 
 protected:
   void onExecute(Context* context) override;
@@ -267,7 +276,6 @@ void SaveFileCommand::onExecute(Context* context)
 class SaveFileAsCommand : public SaveFileBaseCommand {
 public:
   SaveFileAsCommand();
-  Command* clone() const override { return new SaveFileAsCommand(*this); }
 
 protected:
   void onExecute(Context* context) override;
@@ -288,7 +296,6 @@ void SaveFileAsCommand::onExecute(Context* context)
 class SaveFileCopyAsCommand : public SaveFileBaseCommand {
 public:
   SaveFileCopyAsCommand();
-  Command* clone() const override { return new SaveFileCopyAsCommand(*this); }
 
 protected:
   void onExecute(Context* context) override;
@@ -316,7 +323,7 @@ void SaveFileCopyAsCommand::onExecute(Context* context)
   bool isForTwitter = false;
 
 #if ENABLE_UI
-  if (context->isUIAvailable()) {
+  if (m_useUI && context->isUIAvailable()) {
     ExportFileWindow win(doc);
     bool askOverwrite = true;
 

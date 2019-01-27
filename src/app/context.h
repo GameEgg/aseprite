@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -24,6 +25,7 @@ namespace app {
   class Command;
   class Doc;
   class DocView;
+  class Transaction;
 
   class CommandPreconditionException : public base::Exception {
   public:
@@ -83,12 +85,15 @@ namespace app {
       return nullptr;
     }
 
+    // Sets active/running transaction.
+    void setTransaction(Transaction* transaction);
+    Transaction* transaction() { return m_transaction; }
+
     obs::signal<void (CommandExecutionEvent&)> BeforeCommandExecution;
     obs::signal<void (CommandExecutionEvent&)> AfterCommandExecution;
 
   protected:
     // DocsObserver impl
-    void onCreateDocument(CreateDocArgs* args) override;
     void onAddDocument(Doc* doc) override;
     void onRemoveDocument(Doc* doc) override;
 
@@ -101,6 +106,7 @@ namespace app {
     Docs m_docs;
     ContextFlags m_flags;       // Last updated flags.
     Doc* m_lastSelectedDoc;
+    Transaction* m_transaction;
 
     DISABLE_COPYING(Context);
   };

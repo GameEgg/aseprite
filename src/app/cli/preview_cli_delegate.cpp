@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2016-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -98,6 +99,10 @@ void PreviewCliDelegate::saveFile(Context* ctx, const CliOpenFile& cof)
     std::cout << "  - Trim\n";
   }
 
+  if (cof.ignoreEmpty) {
+    std::cout << "  - Ignore empty frames\n";
+  }
+
   std::cout << "  - Size: "
             << cof.document->sprite()->width() << "x"
             << cof.document->sprite()->height() << "\n";
@@ -136,7 +141,8 @@ void PreviewCliDelegate::saveFile(Context* ctx, const CliOpenFile& cof)
       ctx,
       cof.roi(),
       cof.filename,
-      cof.filenameFormat));
+      cof.filenameFormat,
+      cof.ignoreEmpty));
 
   if (fop) {
     base::paths files;
@@ -201,10 +207,19 @@ void PreviewCliDelegate::exportFiles(Context* ctx, DocExporter& exporter)
   }
 }
 
-void PreviewCliDelegate::execScript(const std::string& filename)
+#ifdef ENABLE_SCRIPTING
+void PreviewCliDelegate::execScript(const std::string& filename,
+                                    const Params& params)
 {
   std::cout << "- Run script: '" << filename << "'\n";
+  if (!params.empty()) {
+    std::cout << "  - With app.params = {\n";
+    for (const auto& kv : params)
+      std::cout << "    " << kv.first << "=\"" << kv.second << "\",\n";
+    std::cout << "  }\n";
+  }
 }
+#endif // ENABLE_SCRIPTING
 
 void PreviewCliDelegate::showLayersFilter(const CliOpenFile& cof)
 {

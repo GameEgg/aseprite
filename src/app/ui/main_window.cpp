@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -38,11 +39,12 @@
 #include "app/ui_context.h"
 #include "base/bind.h"
 #include "base/fs.h"
-#include "she/display.h"
-#include "she/system.h"
+#include "os/display.h"
+#include "os/system.h"
 #include "ui/message.h"
 #include "ui/splitter.h"
 #include "ui/system.h"
+#include "ui/tooltips.h"
 #include "ui/view.h"
 
 #ifdef ENABLE_SCRIPTING
@@ -76,7 +78,7 @@ public:
     ui::set_theme(ui::get_theme(), newUIScale);
 
     Manager* manager = Manager::getDefault();
-    she::Display* display = manager->getDisplay();
+    os::Display* display = manager->getDisplay();
     display->setScale(newScreenScale);
     manager->setDisplay(display);
   }
@@ -91,16 +93,18 @@ MainWindow::MainWindow()
   , m_devConsoleView(nullptr)
 #endif
 {
+  m_tooltipManager = new TooltipManager();
   m_menuBar = new MainMenuBar();
   m_notifications = new Notifications();
-  m_contextBar = new ContextBar();
-  m_statusBar = new StatusBar();
-  m_colorBar = new ColorBar(colorBarPlaceholder()->align());
+  m_contextBar = new ContextBar(m_tooltipManager);
+  m_statusBar = new StatusBar(m_tooltipManager);
+  m_colorBar = new ColorBar(colorBarPlaceholder()->align(),
+                            m_tooltipManager);
   m_toolBar = new ToolBar();
   m_tabsBar = new WorkspaceTabs(this);
   m_workspace = new Workspace();
   m_previewEditor = new PreviewEditorWindow();
-  m_timeline = new Timeline();
+  m_timeline = new Timeline(m_tooltipManager);
 
   Editor::registerCommands();
 
@@ -126,6 +130,7 @@ MainWindow::MainWindow()
   m_menuBar->setMenu(AppMenus::instance()->getRootMenu());
 
   // Add the widgets in the boxes
+  addChild(m_tooltipManager);
   menuBarPlaceholder()->addChild(m_menuBar);
   menuBarPlaceholder()->addChild(m_notifications);
   contextBarPlaceholder()->addChild(m_contextBar);
@@ -352,7 +357,7 @@ void MainWindow::onResize(ui::ResizeEvent& ev)
 {
   app::gen::MainWindow::onResize(ev);
 
-  she::Display* display = manager()->getDisplay();
+  os::Display* display = manager()->getDisplay();
   if ((display) &&
       (display->scale()*ui::guiscale() > 2) &&
       (!m_scalePanic) &&
@@ -474,11 +479,14 @@ void MainWindow::onMouseOverTab(Tabs* tabs, TabView* tabView)
     else
       name = base::get_file_name(document->filename());
 
-    m_statusBar->setStatusText(250, "%s", name.c_str());
+    m_statusBar->showDefaultText(document);
   }
-  else {
-    m_statusBar->clearText();
-  }
+  else
+    m_statusBar->showDefaultText();
+}
+
+void MainWindow::onMouseLeaveTab() {
+  m_statusBar->showDefaultText();
 }
 
 DropViewPreviewResult MainWindow::onFloatingTab(Tabs* tabs, TabView* tabView, const gfx::Point& pos)
@@ -514,7 +522,7 @@ void MainWindow::configureWorkspaceLayout()
   bool normal = (m_mode == NormalMode);
   bool isDoc = (getDocView() != nullptr);
 
-  if (she::instance()->menus() == nullptr ||
+  if (os::instance()->menus() == nullptr ||
       pref.general.showMenuBar()) {
     if (!m_menuBar->parent())
       menuBarPlaceholder()->insertChild(0, m_menuBar);

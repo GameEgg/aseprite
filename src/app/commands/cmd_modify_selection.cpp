@@ -16,7 +16,7 @@
 #include "app/i18n/strings.h"
 #include "app/modules/gui.h"
 #include "app/pref/preferences.h"
-#include "app/transaction.h"
+#include "app/tx.h"
 #include "base/convert_to.h"
 #include "doc/algorithm/modify_selection.h"
 #include "doc/brush_type.h"
@@ -39,7 +39,6 @@ class ModifySelectionWindow : public app::gen::ModifySelection {
 class ModifySelectionCommand : public Command {
 public:
   ModifySelectionCommand();
-  Command* clone() const override { return new ModifySelectionCommand(*this); }
 
 protected:
   void onLoadParams(const Params& params) override;
@@ -138,11 +137,11 @@ void ModifySelectionCommand::onExecute(Context* context)
   }
 
   // Set the new mask
-  Transaction transaction(writer.context(),
-                          friendlyName(),
-                          DoesntModifyDocument);
-  transaction.execute(new cmd::SetMask(document, mask.get()));
-  transaction.commit();
+  Tx tx(writer.context(),
+        friendlyName(),
+        DoesntModifyDocument);
+  tx(new cmd::SetMask(document, mask.get()));
+  tx.commit();
 
   document->generateMaskBoundaries();
   update_screen_for_document(document);

@@ -44,6 +44,8 @@ namespace app {
     std::string m_slice;
     doc::SelectedFrames m_selFrames;
     bool m_adjustFramesByFrameTag;
+    bool m_useUI;
+    bool m_ignoreEmpty;
   };
 
 } // namespace app

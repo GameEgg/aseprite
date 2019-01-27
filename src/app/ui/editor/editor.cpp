@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (c) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -52,12 +53,14 @@
 #include "base/bind.h"
 #include "base/chrono.h"
 #include "base/convert_to.h"
-#include "doc/conversion_she.h"
+#include "doc/conversion_to_surface.h"
 #include "doc/doc.h"
 #include "doc/mask_boundaries.h"
 #include "doc/slice.h"
-#include "she/surface.h"
-#include "she/system.h"
+#include "os/color_space.h"
+#include "os/display.h"
+#include "os/surface.h"
+#include "os/system.h"
 #include "ui/ui.h"
 
 #include <algorithm>
@@ -641,23 +644,31 @@ void Editor::drawOneSpriteUnclippedRect(ui::Graphics* g, const gfx::Rect& sprite
   }
 
   if (rendered) {
-    // Convert the render to a she::Surface
-    static she::Surface* tmp = nullptr; // TODO move this to other centralized place
-    if (!tmp || tmp->width() < rc2.w || tmp->height() < rc2.h) {
+    // Convert the render to a os::Surface
+    static os::Surface* tmp = nullptr; // TODO move this to other centralized place
+
+    if (!tmp ||
+        tmp->width() < rc2.w ||
+        tmp->height() < rc2.h ||
+        tmp->colorSpace() != m_document->osColorSpace()) {
       const int maxw = std::max(rc2.w, tmp ? tmp->width(): 0);
       const int maxh = std::max(rc2.h, tmp ? tmp->height(): 0);
       if (tmp)
         tmp->dispose();
-      tmp = she::instance()->createSurface(maxw, maxh);
+
+      tmp = os::instance()->createSurface(
+        maxw, maxh, m_document->osColorSpace());
     }
+
     if (tmp->nativeHandle()) {
       if (newEngine)
         tmp->clear(); // TODO why we need this?
 
       convert_image_to_surface(rendered.get(), m_sprite->palette(m_frame),
                                tmp, 0, 0, 0, 0, rc2.w, rc2.h);
+
       if (newEngine) {
-        g->drawRgbaSurface(tmp, gfx::Rect(0, 0, rc2.w, rc2.h), dest);
+        g->drawSurface(tmp, gfx::Rect(0, 0, rc2.w, rc2.h), dest);
       }
       else {
         g->blit(tmp, 0, 0, dest.x, dest.y, dest.w, dest.h);
@@ -1300,9 +1311,13 @@ tools::Ink* Editor::getCurrentEditorInk()
     return App::instance()->activeToolManager()->activeInk();
 }
 
-bool Editor::isAutoSelectLayer() const
+bool Editor::isAutoSelectLayer()
 {
-  return App::instance()->contextBar()->isAutoSelectLayer();
+  tools::Ink* ink = getCurrentEditorInk();
+  if (ink && ink->isAutoSelectLayer())
+    return true;
+  else
+    return App::instance()->contextBar()->isAutoSelectLayer();
 }
 
 gfx::Point Editor::screenToEditor(const gfx::Point& pt)
@@ -1433,14 +1448,17 @@ void Editor::updateStatusBar()
 void Editor::updateQuicktool()
 {
   if (m_customizationDelegate && !hasCapture()) {
-    auto activeToolManager = App::instance()->activeToolManager();
-    tools::Tool* selectedTool = activeToolManager->selectedTool();
+    auto atm = App::instance()->activeToolManager();
+    tools::Tool* selectedTool = atm->selectedTool();
 
     // Don't change quicktools if we are in a selection tool and using
     // the selection modifiers.
     if (selectedTool->getInk(0)->isSelection() &&
-        int(m_customizationDelegate->getPressedKeyAction(KeyContext::SelectionTool)) != 0)
+        int(m_customizationDelegate->getPressedKeyAction(KeyContext::SelectionTool)) != 0) {
+      if (atm->quickTool())
+        atm->newQuickToolSelectedFromEditor(nullptr);
       return;
+    }
 
     tools::Tool* newQuicktool =
       m_customizationDelegate->getQuickTool(selectedTool);
@@ -1449,8 +1467,7 @@ void Editor::updateQuicktool()
     if (newQuicktool && !m_state->acceptQuickTool(newQuicktool))
       return;
 
-    activeToolManager
-      ->newQuickToolSelectedFromEditor(newQuicktool);
+    atm->newQuickToolSelectedFromEditor(newQuicktool);
   }
 }
 
@@ -1474,6 +1491,8 @@ void Editor::updateToolLoopModifiersIndicators()
   KeyAction action;
 
   if (m_customizationDelegate) {
+    auto atm = App::instance()->activeToolManager();
+
     // When the mouse is captured, is when we are scrolling, or
     // drawing, or moving, or selecting, etc. So several
     // parameters/tool-loop-modifiers are static.
@@ -1481,11 +1500,12 @@ void Editor::updateToolLoopModifiersIndicators()
       modifiers |= (int(m_toolLoopModifiers) &
                     (int(tools::ToolLoopModifiers::kReplaceSelection) |
                      int(tools::ToolLoopModifiers::kAddSelection) |
-                     int(tools::ToolLoopModifiers::kSubtractSelection)));
+                     int(tools::ToolLoopModifiers::kSubtractSelection) |
+                     int(tools::ToolLoopModifiers::kIntersectSelection)));
 
       tools::Controller* controller =
-        (App::instance()->activeToolManager()->selectedTool() ?
-         App::instance()->activeToolManager()->selectedTool()->getController(0): nullptr);
+        (atm->selectedTool() ?
+         atm->selectedTool()->getController(0): nullptr);
 
       // Shape tools modifiers (line, curves, rectangles, etc.)
       if (controller && controller->isTwoPoints()) {
@@ -1516,17 +1536,21 @@ void Editor::updateToolLoopModifiersIndicators()
           // Don't use "subtract" mode if the selection was activated
           // with the "right click mode = a selection-like tool"
           (m_secondaryButton &&
-           App::instance()->activeToolManager()->selectedTool() &&
-           App::instance()->activeToolManager()->selectedTool()->getInk(0)->isSelection())) {
+           atm->selectedTool() &&
+           atm->selectedTool()->getInk(0)->isSelection())) {
         mode = gen::SelectionMode::SUBTRACT;
+      }
+      else if (int(action & KeyAction::IntersectSelection)) {
+        mode = gen::SelectionMode::INTERSECT;
       }
       else if (int(action & KeyAction::AddSelection)) {
         mode = gen::SelectionMode::ADD;
       }
       switch (mode) {
-        case gen::SelectionMode::DEFAULT:  modifiers |= int(tools::ToolLoopModifiers::kReplaceSelection);  break;
-        case gen::SelectionMode::ADD:      modifiers |= int(tools::ToolLoopModifiers::kAddSelection);      break;
-        case gen::SelectionMode::SUBTRACT: modifiers |= int(tools::ToolLoopModifiers::kSubtractSelection); break;
+        case gen::SelectionMode::DEFAULT:   modifiers |= int(tools::ToolLoopModifiers::kReplaceSelection);  break;
+        case gen::SelectionMode::ADD:       modifiers |= int(tools::ToolLoopModifiers::kAddSelection);      break;
+        case gen::SelectionMode::SUBTRACT:  modifiers |= int(tools::ToolLoopModifiers::kSubtractSelection); break;
+        case gen::SelectionMode::INTERSECT: modifiers |= int(tools::ToolLoopModifiers::kIntersectSelection); break;
       }
 
       // For move tool
@@ -1622,7 +1646,7 @@ bool Editor::onProcessMessage(Message* msg)
 
     case kMouseLeaveMessage:
       m_brushPreview.hide();
-      StatusBar::instance()->clearText();
+      StatusBar::instance()->showDefaultText();
       break;
 
     case kMouseDownMessage:
@@ -1749,12 +1773,6 @@ bool Editor::onProcessMessage(Message* msg)
         if (used)
           return true;
       }
-      break;
-
-    case kFocusLeaveMessage:
-      // As we use keys like Space-bar as modifier, we can clear the
-      // keyboard buffer when we lost the focus.
-      she::instance()->clearKeyboardBuffer();
       break;
 
     case kMouseWheelMessage:
@@ -1926,6 +1944,13 @@ void Editor::onShowExtrasChange()
   invalidate();
 }
 
+void Editor::onColorSpaceChanged(DocEvent& ev)
+{
+  // As the document has a new color space, we've to redraw the
+  // complete canvas again with the new color profile.
+  invalidate();
+}
+
 void Editor::onExposeSpritePixels(DocEvent& ev)
 {
   if (m_state && ev.sprite() == m_sprite)
@@ -1956,6 +1981,8 @@ void Editor::onAddFrameTag(DocEvent& ev)
 void Editor::onRemoveFrameTag(DocEvent& ev)
 {
   m_tagFocusBand = -1;
+  if (m_state)
+    m_state->onRemoveFrameTag(this, ev.frameTag());
 }
 
 void Editor::setCursor(const gfx::Point& mouseScreenPos)
@@ -2141,8 +2168,6 @@ void Editor::setZoomAndCenterInMouse(const Zoom& zoom,
     updateEditor();
     setEditorScroll(scrollPos);
   }
-
-  flushRedraw();
 }
 
 void Editor::pasteImage(const Image* image, const Mask* mask)

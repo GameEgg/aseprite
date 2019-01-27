@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -30,7 +31,6 @@ using namespace doc;
 class NewSpriteFromSelectionCommand : public Command {
 public:
   NewSpriteFromSelectionCommand();
-  Command* clone() const override { return new NewSpriteFromSelectionCommand(*this); }
 
 protected:
   bool onEnabled(Context* context) override;
@@ -62,10 +62,11 @@ void NewSpriteFromSelectionCommand::onExecute(Context* context)
   Palette* palette = sprite->palette(site.frame());
 
   std::unique_ptr<Sprite> dstSprite(
-    Sprite::createBasicSprite(image->pixelFormat(),
-                              image->width(),
-                              image->height(),
-                              palette->size()));
+    Sprite::createBasicSprite(ImageSpec((ColorMode)image->pixelFormat(),
+                                        image->width(),
+                                        image->height(),
+                                        palette->size(),
+                                        sprite->colorSpace())));
 
   palette->copyColorsTo(dstSprite->palette(frame_t(0)));
 

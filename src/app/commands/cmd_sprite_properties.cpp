@@ -1,5 +1,6 @@
 // Aseprite
-// Copyright (C) 2001-2017  David Capello
+// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
 // the End-User License Agreement for Aseprite.
@@ -8,14 +9,18 @@
 #include "config.h"
 #endif
 
+#include "app/cmd/assign_color_profile.h"
+#include "app/cmd/convert_color_profile.h"
 #include "app/cmd/set_pixel_ratio.h"
 #include "app/cmd/set_pivot.h"
 #include "app/color.h"
 #include "app/commands/command.h"
 #include "app/context_access.h"
 #include "app/doc_api.h"
+#include "app/i18n/strings.h"
 #include "app/modules/gui.h"
-#include "app/transaction.h"
+#include "app/pref/preferences.h"
+#include "app/tx.h"
 #include "app/ui/color_button.h"
 #include "app/util/pixel_ratio.h"
 #include "base/bind.h"
@@ -23,11 +28,12 @@
 #include "doc/image.h"
 #include "doc/palette.h"
 #include "doc/sprite.h"
+#include "fmt/format.h"
+#include "os/color_space.h"
+#include "os/system.h"
 #include "ui/ui.h"
 
 #include "sprite_properties.xml.h"
-
-#include <cstdio>
 
 namespace app {
 
@@ -36,7 +42,6 @@ using namespace ui;
 class SpritePropertiesCommand : public Command {
 public:
   SpritePropertiesCommand();
-  Command* clone() const override { return new SpritePropertiesCommand(*this); }
 
 protected:
   bool onEnabled(Context* context) override;
@@ -57,11 +62,15 @@ bool SpritePropertiesCommand::onEnabled(Context* context)
 void SpritePropertiesCommand::onExecute(Context* context)
 {
   std::string imgtype_text;
-  char buf[256];
-  ColorButton* color_button = NULL;
+  ColorButton* color_button = nullptr;
+
+  // List of available color profiles
+  std::vector<os::ColorSpacePtr> colorSpaces;
+  os::instance()->listColorSpaces(colorSpaces);
 
   // Load the window widget
   app::gen::SpriteProperties window;
+  int selectedColorProfile = -1;
 
   // Get sprite properties and fill frame fields
   {
@@ -78,8 +87,8 @@ void SpritePropertiesCommand::onExecute(Context* context)
         imgtype_text = "Grayscale";
         break;
       case IMAGE_INDEXED:
-        std::sprintf(buf, "Indexed (%d colors)", sprite->palette(0)->size());
-        imgtype_text = buf;
+        imgtype_text = fmt::format("Indexed ({0} colors)",
+                                   sprite->palette(0)->size());
         break;
       default:
         ASSERT(false);
@@ -109,6 +118,14 @@ void SpritePropertiesCommand::onExecute(Context* context)
                                      ColorButtonOptions());
 
       window.transparentColorPlaceholder()->addChild(color_button);
+
+      // TODO add a way to get or create an existent TooltipManager
+      TooltipManager* tooltipManager = new TooltipManager;
+      window.addChild(tooltipManager);
+      tooltipManager->addTooltipFor(
+        color_button,
+        Strings::sprite_properties_transparent_color_tooltip(),
+        LEFT);
     }
     else {
       window.transparentColorPlaceholder()->addChild(new Label("(only for indexed images)"));
@@ -122,6 +139,64 @@ void SpritePropertiesCommand::onExecute(Context* context)
       base::convert_to<std::string>(sprite->pivotX()));
     window.pivotY()->setText(
       base::convert_to<std::string>(sprite->pivotY()));
+      
+    // Color profile
+    selectedColorProfile = -1;
+    int i = 0;
+    for (auto& cs : colorSpaces) {
+      if (cs->gfxColorSpace()->nearlyEqual(*sprite->colorSpace())) {
+        selectedColorProfile = i;
+        break;
+      }
+      ++i;
+    }
+    if (selectedColorProfile < 0) {
+      colorSpaces.push_back(os::instance()->createColorSpace(sprite->colorSpace()));
+      selectedColorProfile = colorSpaces.size()-1;
+    }
+
+    for (auto& cs : colorSpaces)
+      window.colorProfile()->addItem(cs->gfxColorSpace()->name());
+    window.colorProfile()->setSelectedItemIndex(selectedColorProfile);
+
+    auto updateButtons =
+      [&] {
+        bool enabled = (selectedColorProfile != window.colorProfile()->getSelectedItemIndex());
+        window.assignColorProfile()->setEnabled(enabled);
+        window.convertColorProfile()->setEnabled(enabled);
+        window.ok()->setEnabled(!enabled);
+      };
+
+    window.assignColorProfile()->setEnabled(false);
+    window.convertColorProfile()->setEnabled(false);
+    window.colorProfile()->Change.connect(updateButtons);
+
+    window.assignColorProfile()->Click.connect(
+      [&](Event&){
+        selectedColorProfile = window.colorProfile()->getSelectedItemIndex();
+
+        ContextWriter writer(context);
+        Sprite* sprite(writer.sprite());
+        Tx tx(writer.context(), "Assign Color Profile");
+        tx(new cmd::AssignColorProfile(
+             sprite, colorSpaces[selectedColorProfile]->gfxColorSpace()));
+        tx.commit();
+
+        updateButtons();
+      });
+    window.convertColorProfile()->Click.connect(
+      [&](Event&){
+        selectedColorProfile = window.colorProfile()->getSelectedItemIndex();
+
+        ContextWriter writer(context);
+        Sprite* sprite(writer.sprite());
+        Tx tx(writer.context(), "Convert Color Profile");
+        tx(new cmd::ConvertColorProfile(
+             sprite, colorSpaces[selectedColorProfile]->gfxColorSpace()));
+        tx.commit();
+
+        updateButtons();
+      });
   }
 
   window.remapWindow();
@@ -144,22 +219,32 @@ void SpritePropertiesCommand::onExecute(Context* context)
     double pivotY = window.pivotY()->textDouble();
 
     if (index != sprite->transparentColor() ||
+<<<<<<< HEAD
         pixelRatio != sprite->pixelRatio() ||
         pivotX != sprite->pivotX() ||
         pivotY != sprite->pivotY()) {
       Transaction transaction(writer.context(), "Change Sprite Properties");
       DocApi api = writer.document()->getApi(transaction);
+=======
+        pixelRatio != sprite->pixelRatio()) {
+      Tx tx(writer.context(), "Change Sprite Properties");
+      DocApi api = writer.document()->getApi(tx);
+>>>>>>> 67e0da478da465dddaca90cb8e409da33f5ec45c
 
       if (index != sprite->transparentColor())
         api.setSpriteTransparentColor(sprite, index);
 
       if (pixelRatio != sprite->pixelRatio())
-        transaction.execute(new cmd::SetPixelRatio(sprite, pixelRatio));
+        tx(new cmd::SetPixelRatio(sprite, pixelRatio));
 
+<<<<<<< HEAD
       if (pivotX != sprite->pivotX() || pivotY != sprite->pivotY())
         transaction.execute(new cmd::SetPivot(sprite, gfx::PointF(pivotX, pivotY)));
 
       transaction.commit();
+=======
+      tx.commit();
+>>>>>>> 67e0da478da465dddaca90cb8e409da33f5ec45c
 
       update_screen_for_document(writer.document());
     }

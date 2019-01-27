@@ -1,4 +1,5 @@
 // Aseprite UI Library
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -9,6 +10,7 @@
 // #define DEBUG_PAINT_EVENTS
 // #define LIMIT_DISPATCH_TIME
 // #define DEBUG_UI_THREADS
+#define GARBAGE_TRACE(...)
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -19,11 +21,11 @@
 #include "base/concurrent_queue.h"
 #include "base/scoped_value.h"
 #include "base/time.h"
-#include "she/display.h"
-#include "she/event.h"
-#include "she/event_queue.h"
-#include "she/surface.h"
-#include "she/system.h"
+#include "os/display.h"
+#include "os/event.h"
+#include "os/event_queue.h"
+#include "os/surface.h"
+#include "os/system.h"
 #include "ui/intern.h"
 #include "ui/ui.h"
 
@@ -44,12 +46,19 @@
 
 namespace ui {
 
-#define ACCEPT_FOCUS(widget)                                    \
-  ((((widget)->flags() & (FOCUS_STOP |                          \
-                          DISABLED |                            \
-                          HIDDEN |                              \
-                          DECORATIVE)) == FOCUS_STOP) &&        \
-   ((widget)->isVisible()))
+namespace {
+
+// The redraw state is used to avoid drawing the manager when a window
+// has been just closed by the user, so we delay the redrawing (the
+// kPaintMessages generation) for the next generateMessages() round.
+enum class RedrawState {
+   Normal,
+   AWindowHasJustBeenClosed,
+   RedrawDelayed,
+};
+RedrawState redrawState = RedrawState::Normal;
+
+} // anonymous namespace
 
 static const int NFILTERS = (int)(kFirstRegisteredMessage+1);
 
@@ -74,6 +83,7 @@ static base::thread::native_handle_type manager_thread = 0;
 
 static WidgetsList mouse_widgets_list; // List of widgets to send mouse events
 static Messages msg_queue;             // Messages queue
+static Messages used_msg_queue;        // Messages queue
 static base::concurrent_queue<Message*> concurrent_msg_queue;
 static Filters msg_filters[NFILTERS]; // Filters for every enqueued message
 static int filter_locks = 0;
@@ -86,10 +96,19 @@ static bool first_time = true;    // true when we don't enter in poll yet
 
 // Don't adjust window positions automatically when it's false. Used
 // when Screen/UI scaling is changed to avoid adjusting windows as
-// when the she::Display is resized by the user.
+// when the os::Display is resized by the user.
 static bool auto_window_adjustment = true;
 
-/* keyboard focus movement stuff */
+// Keyboard focus movement stuff
+inline bool does_accept_focus(Widget* widget)
+{
+  return ((((widget)->flags() & (FOCUS_STOP |
+                                 DISABLED |
+                                 HIDDEN |
+                                 DECORATIVE)) == FOCUS_STOP) &&
+          ((widget)->isVisible()));
+}
+
 static int count_widgets_accept_focus(Widget* widget);
 static bool child_accept_focus(Widget* widget, bool first);
 static Widget* next_widget(Widget* widget);
@@ -189,7 +208,7 @@ Manager::~Manager()
     set_mouse_cursor(kNoCursor);
 
     // Destroy timers
-    Timer::checkNoTimers();
+    ASSERT(!Timer::haveTimers());
 
     // Destroy filters
 #ifdef _DEBUG
@@ -206,14 +225,14 @@ Manager::~Manager()
   }
 }
 
-void Manager::setDisplay(she::Display* display)
+void Manager::setDisplay(os::Display* display)
 {
   base::ScopedValue<bool> lock(
     auto_window_adjustment, false,
     auto_window_adjustment);
 
   m_display = display;
-  m_eventQueue = she::instance()->eventQueue();
+  m_eventQueue = os::instance()->eventQueue();
 
   onNewDisplayConfiguration();
 }
@@ -243,7 +262,6 @@ void Manager::flipDisplay()
   update_cursor_overlay();
 
   // Draw overlays.
-  overlays->captureOverlappedAreas();
   overlays->drawOverlays();
 
   // Flip dirty region.
@@ -252,13 +270,11 @@ void Manager::flipDisplay()
       m_dirtyRegion,
       gfx::Region(gfx::Rect(0, 0, ui::display_w(), ui::display_h())));
 
-    for (auto& rc : m_dirtyRegion)
+    for (const auto& rc : m_dirtyRegion)
       m_display->flip(rc);
 
     m_dirtyRegion.clear();
   }
-
-  overlays->restoreOverlappedAreas();
 }
 
 bool Manager::generateMessages()
@@ -275,12 +291,15 @@ bool Manager::generateMessages()
   }
 
   // Generate messages from OS input
-  generateMessagesFromSheEvents();
+  generateMessagesFromOSEvents();
 
   // Generate messages for timers
   Timer::pollTimers();
 
-  if (!msg_queue.empty())
+  // Returns true if we have to dispatch messages (if the redraw was
+  // delayed, we have to pump messages because there is where paint
+  // messages are flushed)
+  if (!msg_queue.empty() || redrawState != RedrawState::Normal)
     return true;
   else
     return false;
@@ -306,59 +325,78 @@ void Manager::generateSetCursorMessage(const gfx::Point& mousePos,
     set_mouse_cursor(kArrowCursor);
 }
 
-static MouseButtons mouse_buttons_from_she_to_ui(const she::Event& sheEvent)
+static MouseButtons mouse_buttons_from_os_to_ui(const os::Event& sheEvent)
 {
   switch (sheEvent.button()) {
-    case she::Event::LeftButton:   return kButtonLeft; break;
-    case she::Event::RightButton:  return kButtonRight; break;
-    case she::Event::MiddleButton: return kButtonMiddle; break;
-    case she::Event::X1Button:     return kButtonX1; break;
-    case she::Event::X2Button:     return kButtonX2; break;
+    case os::Event::LeftButton:   return kButtonLeft; break;
+    case os::Event::RightButton:  return kButtonRight; break;
+    case os::Event::MiddleButton: return kButtonMiddle; break;
+    case os::Event::X1Button:     return kButtonX1; break;
+    case os::Event::X2Button:     return kButtonX2; break;
     default: return kButtonNone;
   }
 }
 
-void Manager::generateMessagesFromSheEvents()
+void Manager::generateMessagesFromOSEvents()
 {
-  she::Event lastMouseMoveEvent;
+  os::Event lastMouseMoveEvent;
 
   // Events from "she" layer.
-  she::Event sheEvent;
+  os::Event sheEvent;
   for (;;) {
-    // bool canWait = (msg_queue.empty());
-    bool canWait = false;
+    // TODO Add timers to laf::os library so we can wait for then in
+    //      the OS message loop.
+    bool canWait = (msg_queue.empty() &&
+                    redrawState == RedrawState::Normal &&
+                    !Timer::haveRunningTimers());
+
+    if (canWait && used_msg_queue.empty())
+      collectGarbage();
+#if _DEBUG
+    else if (!m_garbage.empty()) {
+      GARBAGE_TRACE("collectGarbage() wasn't called #objects=%d"
+                    " (msg_queue=%d used_msg_queue=%d redrawState=%d runningTimers=%d)\n",
+                    int(m_garbage.size()),
+                    msg_queue.size(),
+                    used_msg_queue.size(),
+                    int(redrawState),
+                    Timer::haveRunningTimers());
+    }
+#endif
 
     m_eventQueue->getEvent(sheEvent, canWait);
-    if (sheEvent.type() == she::Event::None)
+    if (sheEvent.type() == os::Event::None)
       break;
 
     switch (sheEvent.type()) {
 
-      case she::Event::CloseDisplay: {
+      case os::Event::CloseDisplay: {
         Message* msg = new Message(kCloseDisplayMessage);
-        msg->broadcastToChildren(this);
+        msg->setRecipient(this);
+        msg->setPropagateToChildren(true);
         enqueueMessage(msg);
         break;
       }
 
-      case she::Event::ResizeDisplay: {
+      case os::Event::ResizeDisplay: {
         Message* msg = new Message(kResizeDisplayMessage);
-        msg->broadcastToChildren(this);
+        msg->setRecipient(this);
+        msg->setPropagateToChildren(true);
         enqueueMessage(msg);
         break;
       }
 
-      case she::Event::DropFiles: {
+      case os::Event::DropFiles: {
         Message* msg = new DropFilesMessage(sheEvent.files());
-        msg->addRecipient(this);
+        msg->setRecipient(this);
         enqueueMessage(msg);
         break;
       }
 
-      case she::Event::KeyDown:
-      case she::Event::KeyUp: {
+      case os::Event::KeyDown:
+      case os::Event::KeyUp: {
         Message* msg = new KeyMessage(
-          (sheEvent.type() == she::Event::KeyDown ?
+          (sheEvent.type() == os::Event::KeyDown ?
              kKeyDownMessage:
              kKeyUpMessage),
           sheEvent.scancode(),
@@ -374,14 +412,14 @@ void Manager::generateMessagesFromSheEvents()
         break;
       }
 
-      case she::Event::MouseEnter: {
+      case os::Event::MouseEnter: {
         _internal_set_mouse_position(sheEvent.position());
         set_mouse_cursor(kArrowCursor);
         lastMouseMoveEvent = sheEvent;
         break;
       }
 
-      case she::Event::MouseLeave: {
+      case os::Event::MouseLeave: {
         set_mouse_cursor(kOutsideDisplay);
         setMouse(NULL);
 
@@ -389,11 +427,11 @@ void Manager::generateMessagesFromSheEvents()
 
         // To avoid calling kSetCursorMessage when the mouse leaves
         // the window.
-        lastMouseMoveEvent = she::Event();
+        lastMouseMoveEvent = os::Event();
         break;
       }
 
-      case she::Event::MouseMove: {
+      case os::Event::MouseMove: {
         _internal_set_mouse_position(sheEvent.position());
         handleMouseMove(
           sheEvent.position(),
@@ -404,8 +442,8 @@ void Manager::generateMessagesFromSheEvents()
         break;
       }
 
-      case she::Event::MouseDown: {
-        MouseButtons pressedButton = mouse_buttons_from_she_to_ui(sheEvent);
+      case os::Event::MouseDown: {
+        MouseButtons pressedButton = mouse_buttons_from_os_to_ui(sheEvent);
         m_mouseButtons = (MouseButtons)((int)m_mouseButtons | (int)pressedButton);
         _internal_set_mouse_buttons(m_mouseButtons);
 
@@ -417,8 +455,8 @@ void Manager::generateMessagesFromSheEvents()
         break;
       }
 
-      case she::Event::MouseUp: {
-        MouseButtons releasedButton = mouse_buttons_from_she_to_ui(sheEvent);
+      case os::Event::MouseUp: {
+        MouseButtons releasedButton = mouse_buttons_from_os_to_ui(sheEvent);
         m_mouseButtons = (MouseButtons)((int)m_mouseButtons & ~(int)releasedButton);
         _internal_set_mouse_buttons(m_mouseButtons);
 
@@ -430,8 +468,8 @@ void Manager::generateMessagesFromSheEvents()
         break;
       }
 
-      case she::Event::MouseDoubleClick: {
-        MouseButtons clickedButton = mouse_buttons_from_she_to_ui(sheEvent);
+      case os::Event::MouseDoubleClick: {
+        MouseButtons clickedButton = mouse_buttons_from_os_to_ui(sheEvent);
         handleMouseDoubleClick(
           sheEvent.position(),
           clickedButton,
@@ -440,7 +478,7 @@ void Manager::generateMessagesFromSheEvents()
         break;
       }
 
-      case she::Event::MouseWheel: {
+      case os::Event::MouseWheel: {
         handleMouseWheel(sheEvent.position(), m_mouseButtons,
                          sheEvent.modifiers(),
                          sheEvent.pointerType(),
@@ -449,7 +487,7 @@ void Manager::generateMessagesFromSheEvents()
         break;
       }
 
-      case she::Event::TouchMagnify: {
+      case os::Event::TouchMagnify: {
         _internal_set_mouse_position(sheEvent.position());
 
         handleTouchMagnify(sheEvent.position(),
@@ -462,7 +500,7 @@ void Manager::generateMessagesFromSheEvents()
   }
 
   // Generate just one kSetCursorMessage for the last mouse position
-  if (lastMouseMoveEvent.type() != she::Event::None) {
+  if (lastMouseMoveEvent.type() != os::Event::None) {
     sheEvent = lastMouseMoveEvent;
     generateSetCursorMessage(sheEvent.position(),
                              sheEvent.modifiers(),
@@ -483,8 +521,13 @@ void Manager::handleMouseMove(const gfx::Point& mousePos,
   Widget* widget = nullptr;
   for (auto mouseWidget : mouse_widgets_list) {
     widget = mouseWidget->pick(mousePos);
-    if (widget)
+    if (widget) {
+      // Get the first ancestor of the picked widget that doesn't
+      // ignore mouse events.
+      while (widget && widget->hasFlags(IGNORE_MOUSE))
+        widget = widget->parent();
       break;
+    }
   }
 
   // Fixup "mouse" flag
@@ -579,7 +622,7 @@ void Manager::handleTouchMagnify(const gfx::Point& mousePos,
       mousePos,
       magnification);
 
-    msg->addRecipient(widget);
+    msg->setRecipient(widget);
 
     enqueueMessage(msg);
   }
@@ -636,14 +679,26 @@ void Manager::dispatchMessages()
   // might change the state of widgets, etc. In case pumpQueue()
   // returns a number greater than 0, it means that we've processed
   // some messages, so we've to redraw the screen.
-  if (pumpQueue() > 0) {
-    // Generate and send just kPaintMessages with the latest UI state.
-    flushRedraw();
-    pumpQueue();
-  }
+  if (pumpQueue() > 0 || redrawState == RedrawState::RedrawDelayed) {
+    // If a window has just been closed with Manager::_closeWindow()
+    // after processing messages, we'll wait the next event generation
+    // to process painting events (so the manager doesn't lost the
+    // DIRTY flag right now).
+    if (redrawState == RedrawState::AWindowHasJustBeenClosed) {
+      redrawState = RedrawState::RedrawDelayed;
+    }
+    else {
+      if (redrawState == RedrawState::RedrawDelayed)
+        redrawState = RedrawState::Normal;
 
-  // Flip the back-buffer to the real display.
-  flipDisplay();
+      // Generate and send just kPaintMessages with the latest UI state.
+      flushRedraw();
+      pumpQueue();
+
+      // Flip the back-buffer to the real display.
+      flipDisplay();
+    }
+  }
 }
 
 void Manager::addToGarbage(Widget* widget)
@@ -700,67 +755,40 @@ void Manager::setFocus(Widget* widget)
               && !(widget->hasFlags(HIDDEN))
               && !(widget->hasFlags(DECORATIVE))
               && someParentIsFocusStop(widget)))) {
-    WidgetsList widget_parents;
-    Widget* common_parent = NULL;
-
-    if (widget)
-      widget->getParents(false, widget_parents);
+    Widget* commonAncestor = findLowestCommonAncestor(focus_widget, widget);
 
     // Fetch the focus
-    if (focus_widget) {
-      WidgetsList focus_parents;
-      focus_widget->getParents(true, focus_parents);
-
-      Message* msg = new Message(kFocusLeaveMessage);
-
-      for (Widget* parent1 : focus_parents) {
-        if (widget) {
-          for (Widget* parent2 : widget_parents) {
-            if (parent1 == parent2) {
-              common_parent = parent1;
-              break;
-            }
-          }
-          if (common_parent)
-            break;
-        }
-
-        if (parent1->hasFocus()) {
-          parent1->disableFlags(HAS_FOCUS);
-          msg->addRecipient(parent1);
-        }
-      }
-
+    if (focus_widget && focus_widget != commonAncestor) {
+      auto msg = new Message(kFocusLeaveMessage);
+      msg->setRecipient(focus_widget);
+      msg->setPropagateToParent(true);
+      msg->setCommonAncestor(commonAncestor);
       enqueueMessage(msg);
+
+      // Remove HAS_FOCUS from all hierarchy
+      auto a = focus_widget;
+      while (a && a != commonAncestor) {
+        a->disableFlags(HAS_FOCUS);
+        a = a->parent();
+      }
     }
 
     // Put the focus
     focus_widget = widget;
     if (widget) {
-      WidgetsList::iterator it;
-
-      if (common_parent) {
-        it = std::find(widget_parents.begin(),
-                       widget_parents.end(),
-                       common_parent);
-        ASSERT(it != widget_parents.end());
-        ++it;
-      }
-      else
-        it = widget_parents.begin();
-
-      Message* msg = new Message(kFocusEnterMessage);
-
-      for (; it != widget_parents.end(); ++it) {
-        Widget* w = *it;
-
-        if (w->hasFlags(FOCUS_STOP)) {
-          w->enableFlags(HAS_FOCUS);
-          msg->addRecipient(w);
-        }
-      }
-
+      auto msg = new Message(kFocusEnterMessage);
+      msg->setRecipient(widget);
+      msg->setPropagateToParent(true);
+      msg->setCommonAncestor(commonAncestor);
       enqueueMessage(msg);
+
+      // Add HAS_FOCUS to all hierarchy
+      auto a = focus_widget;
+      while (a && a != commonAncestor) {
+        if (a->hasFlags(FOCUS_STOP))
+          a->enableFlags(HAS_FOCUS);
+        a = a->parent();
+      }
     }
   }
 }
@@ -781,71 +809,48 @@ void Manager::setMouse(Widget* widget)
 #endif
 
   if ((mouse_widget != widget) && (!capture_widget)) {
-    WidgetsList widget_parents;
-    Widget* common_parent = NULL;
-
-    if (widget)
-      widget->getParents(false, widget_parents);
+    Widget* commonAncestor = findLowestCommonAncestor(mouse_widget, widget);
 
     // Fetch the mouse
-    if (mouse_widget) {
-      WidgetsList mouse_parents;
-      mouse_widget->getParents(true, mouse_parents);
-
-      Message* msg = new Message(kMouseLeaveMessage);
-
-      for (Widget* parent1 : mouse_parents) {
-        if (widget) {
-          for (Widget* parent2 : widget_parents) {
-            if (parent1 == parent2) {
-              common_parent = parent1;
-              break;
-            }
-          }
-          if (common_parent)
-            break;
-        }
-
-        if (parent1->hasMouse()) {
-          parent1->disableFlags(HAS_MOUSE);
-          msg->addRecipient(parent1);
-        }
-      }
-
+    if (mouse_widget && mouse_widget != commonAncestor) {
+      auto msg = new Message(kMouseLeaveMessage);
+      msg->setRecipient(mouse_widget);
+      msg->setPropagateToParent(true);
+      msg->setCommonAncestor(commonAncestor);
       enqueueMessage(msg);
+
+      // Remove HAS_MOUSE from all the hierarchy
+      auto a = mouse_widget;
+      while (a && a != commonAncestor) {
+        a->disableFlags(HAS_MOUSE);
+        a = a->parent();
+      }
     }
 
     // Put the mouse
     mouse_widget = widget;
     if (widget) {
-      WidgetsList::iterator it;
-
-      if (common_parent) {
-        it = std::find(widget_parents.begin(),
-                       widget_parents.end(),
-                       common_parent);
-        ASSERT(it != widget_parents.end());
-        ++it;
-      }
-      else
-        it = widget_parents.begin();
-
-      Message* msg = newMouseMessage(
+      auto msg = newMouseMessage(
         kMouseEnterMessage, NULL,
         get_mouse_position(),
         PointerType::Unknown,
         _internal_get_mouse_buttons(),
         kKeyUninitializedModifier);
 
-      for (; it != widget_parents.end(); ++it) {
-        (*it)->enableFlags(HAS_MOUSE);
-        msg->addRecipient(*it);
-      }
-
+      msg->setRecipient(widget);
+      msg->setPropagateToParent(true);
+      msg->setCommonAncestor(commonAncestor);
       enqueueMessage(msg);
       generateSetCursorMessage(get_mouse_position(),
                                kKeyUninitializedModifier,
                                PointerType::Unknown);
+
+      // Add HAS_MOUSE to all the hierarchy
+      auto a = mouse_widget;
+      while (a && a != commonAncestor) {
+        a->enableFlags(HAS_MOUSE);
+        a = a->parent();
+      }
     }
   }
 }
@@ -876,7 +881,7 @@ void Manager::attractFocus(Widget* widget)
 void Manager::focusFirstChild(Widget* widget)
 {
   for (Widget* it=widget->window(); it; it=next_widget(it)) {
-    if (ACCEPT_FOCUS(it) && !(child_accept_focus(it, true))) {
+    if (does_accept_focus(it) && !(child_accept_focus(it, true))) {
       setFocus(it);
       break;
     }
@@ -934,17 +939,6 @@ void Manager::freeWidget(Widget* widget)
   ASSERT(!Manager::widgetAssociatedToManager(widget));
 }
 
-void Manager::removeMessage(Message* msg)
-{
-#ifdef DEBUG_UI_THREADS
-  ASSERT(manager_thread == base::this_thread::native_handle());
-#endif
-
-  auto it = std::find(msg_queue.begin(), msg_queue.end(), msg);
-  ASSERT(it != msg_queue.end());
-  msg_queue.erase(it);
-}
-
 void Manager::removeMessagesFor(Widget* widget)
 {
 #ifdef DEBUG_UI_THREADS
@@ -952,7 +946,10 @@ void Manager::removeMessagesFor(Widget* widget)
 #endif
 
   for (Message* msg : msg_queue)
-    removeWidgetFromRecipients(widget, msg);
+    msg->removeRecipient(widget);
+
+  for (Message* msg : used_msg_queue)
+    msg->removeRecipient(widget);
 }
 
 void Manager::removeMessagesFor(Widget* widget, MessageType type)
@@ -963,7 +960,11 @@ void Manager::removeMessagesFor(Widget* widget, MessageType type)
 
   for (Message* msg : msg_queue)
     if (msg->type() == type)
-      removeWidgetFromRecipients(widget, msg);
+      msg->removeRecipient(widget);
+
+  for (Message* msg : used_msg_queue)
+    if (msg->type() == type)
+      msg->removeRecipient(widget);
 }
 
 void Manager::removeMessagesForTimer(Timer* timer)
@@ -974,9 +975,7 @@ void Manager::removeMessagesForTimer(Timer* timer)
 
   for (auto it=msg_queue.begin(); it != msg_queue.end(); ) {
     Message* msg = *it;
-
-    if (!msg->isUsed() &&
-        msg->type() == kTimerMessage &&
+    if (msg->type() == kTimerMessage &&
         static_cast<TimerMessage*>(msg)->timer() == timer) {
       delete msg;
       it = msg_queue.erase(it);
@@ -1153,6 +1152,8 @@ void Manager::_closeWindow(Window* window, bool redraw_background)
   Widget* widget = pick(ui::get_mouse_position());
   if (widget)
     setMouse(widget);
+
+  redrawState = RedrawState::AWindowHasJustBeenClosed;
 }
 
 bool Manager::onProcessMessage(Message* msg)
@@ -1162,7 +1163,7 @@ bool Manager::onProcessMessage(Message* msg)
     case kPaintMessage:
       // Draw nothing (the manager should be invisible). On Windows,
       // after closing the main window, the manager will not refresh
-      // the she::Display content, so we'll avoid a gray background
+      // the os::Display content, so we'll avoid a gray background
       // (the last main window content is kept until the Display is
       // finally closed.)
       return true;
@@ -1347,25 +1348,19 @@ int Manager::pumpQueue()
 #endif
 
   int count = 0;                // Number of processed messages
-  auto it = msg_queue.begin();
-  while (it != msg_queue.end()) {
+  while (!msg_queue.empty()) {
 #ifdef LIMIT_DISPATCH_TIME
     if (base::current_tick()-t > 250)
       break;
 #endif
 
     // The message to process
+    auto it = msg_queue.begin();
     Message* msg = *it;
 
-    // Go to next message
-    if (msg->isUsed()) {
-      ++it;
-      continue;
-    }
-
-    // This message is in use
-    msg->markAsUsed();
-    Message* first_msg = msg;
+    // Move the message from msg_queue to used_msg_queue
+    msg_queue.erase(it);
+    auto eraseIt = used_msg_queue.insert(used_msg_queue.end(), msg);
 
     // Call Timer::tick() if this is a tick message.
     if (msg->type() == kTimerMessage) {
@@ -1398,19 +1393,16 @@ int Manager::pumpQueue()
     }
 
     if (!done) {
-      // Then send the message to its recipients
-      for (Widget* widget : msg->recipients()) {
+      // Then send the message to its recipient
+      if (Widget* widget = msg->recipient())
         done = sendMessageToWidget(msg, widget);
-        if (done)
-          break;
-      }
     }
 
-    // Remove the message from the msg_queue
-    it = msg_queue.erase(it);
+    // Remove the message from the used_msg_queue
+    used_msg_queue.erase(eraseIt);
 
     // Destroy the message
-    delete first_msg;
+    delete msg;
     ++count;
   }
 
@@ -1481,7 +1473,11 @@ bool Manager::sendMessageToWidget(Message* msg, Widget* widget)
       return false;
 
     PaintMessage* paintMsg = static_cast<PaintMessage*>(msg);
-    she::Surface* surface = m_display->getSurface();
+
+    // Restore overlays in the region that we're going to paint.
+    OverlayManager::instance()->restoreOverlappedAreas(paintMsg->rect());
+
+    os::Surface* surface = m_display->getSurface();
     surface->saveClip();
 
     if (surface->clipRect(paintMsg->rect())) {
@@ -1496,7 +1492,7 @@ bool Manager::sendMessageToWidget(Message* msg, Widget* widget)
 
 #ifdef DEBUG_PAINT_EVENTS
       {
-        she::SurfaceLock lock(surface);
+        os::SurfaceLock lock(surface);
         surface->fillRect(gfx::rgba(0, 0, 255), paintMsg->rect());
       }
 
@@ -1527,9 +1523,18 @@ bool Manager::sendMessageToWidget(Message* msg, Widget* widget)
   return used;
 }
 
-void Manager::invalidateDisplayRegion(const gfx::Region& region)
+// It's like Widget::onInvalidateRegion() but optimized for the
+// Manager (as we know that all children in a Manager will be windows,
+// we can use this knowledge to avoid some calculations).
+void Manager::onInvalidateRegion(const gfx::Region& region)
 {
-  // TODO intersect with getDrawableRegion()???
+  if (!isVisible() || region.contains(bounds()) == gfx::Region::Out)
+    return;
+
+  // Intersect only with manager bounds, we don't need to use
+  // getDrawableRegion() because each window will be processed in the
+  // following for() loop (and it's highly probable that a desktop
+  // Window will use the whole manager portion anyway).
   gfx::Region reg1;
   reg1.createIntersection(region, gfx::Region(bounds()));
 
@@ -1546,19 +1551,23 @@ void Manager::invalidateDisplayRegion(const gfx::Region& region)
     // There is desktop?
     if (window->isDesktop()) {
       withDesktop = true;
-      break;                                    // Work done
+      break; // Work done
     }
 
     // Clip this window area for the next window.
-    gfx::Region reg3;
-    window->getRegion(reg3);
-    reg1.createSubtraction(reg1, reg3);
+    gfx::Region reg2;
+    window->getRegion(reg2);
+    reg1.createSubtraction(reg1, reg2);
   }
 
   // Invalidate areas outside windows (only when there are not a
   // desktop window).
-  if (!withDesktop)
-    Widget::invalidateRegion(reg1);
+  if (!withDesktop) {
+    // TODO we should be able to modify m_updateRegion directly here,
+    // so we avoid the getDrawableRegion() call from
+    // Widget::onInvalidateRegion().
+    Widget::onInvalidateRegion(reg1);
+  }
 }
 
 LayoutIO* Manager::getLayoutIO()
@@ -1571,10 +1580,13 @@ void Manager::collectGarbage()
   if (m_garbage.empty())
     return;
 
-  for (WidgetsList::iterator
-         it = m_garbage.begin(),
-         end = m_garbage.end(); it != end; ++it) {
-    delete *it;
+  GARBAGE_TRACE("Manager::collectGarbage() #objects=%d\n", int(m_garbage.size()));
+
+  for (auto widget : m_garbage) {
+    GARBAGE_TRACE(" -> deleting %s %s ---\n",
+                  typeid(*widget).name(),
+                  widget->id().c_str());
+    delete widget;
   }
   m_garbage.clear();
 }
@@ -1584,9 +1596,40 @@ void Manager::collectGarbage()
  **********************************************************************/
 
 // static
-void Manager::removeWidgetFromRecipients(Widget* widget, Message* msg)
+Widget* Manager::findLowestCommonAncestor(Widget* a, Widget* b)
 {
-  msg->removeRecipient(widget);
+  if (!a || !b)
+    return nullptr;
+
+  Widget* u = a;
+  Widget* v = b;
+  int aDepth = 0;
+  int bDepth = 0;
+  while (u) {
+    ++aDepth;
+    u = u->parent();
+  }
+  while (v) {
+    ++bDepth;
+    v = v->parent();
+  }
+
+  while (aDepth > bDepth) {
+    --aDepth;
+    a = a->parent();
+  }
+  while (bDepth > aDepth) {
+    --bDepth;
+    b = b->parent();
+  }
+
+  while (a && b) {
+    if (a == b)
+      break;
+    a = a->parent();
+    b = b->parent();
+  }
+  return a;
 }
 
 // static
@@ -1647,7 +1690,7 @@ Message* Manager::newMouseMessage(
     wheelDelta, preciseWheel);
 
   if (widget)
-    msg->addRecipient(widget);
+    msg->setRecipient(widget);
 
   return msg;
 }
@@ -1657,15 +1700,15 @@ void Manager::broadcastKeyMsg(Message* msg)
 {
   // Send the message to the widget with capture
   if (capture_widget) {
-    msg->addRecipient(capture_widget);
+    msg->setRecipient(capture_widget);
   }
   // Send the msg to the focused widget
   else if (focus_widget) {
-    msg->addRecipient(focus_widget);
+    msg->setRecipient(focus_widget);
   }
   // Finally, send the message to the manager, it'll know what to do
   else {
-    msg->addRecipient(this);
+    msg->setRecipient(this);
   }
 }
 
@@ -1707,11 +1750,11 @@ bool Manager::processFocusMovementMessage(Message* msg)
 
     // Create a list of possible candidates to receive the focus
     for (it=focus_widget; it; it=next_widget(it)) {
-      if (ACCEPT_FOCUS(it) && !(child_accept_focus(it, true)))
+      if (does_accept_focus(it) && !(child_accept_focus(it, true)))
         list[c++] = it;
     }
     for (it=window; it != focus_widget; it=next_widget(it)) {
-      if (ACCEPT_FOCUS(it) && !(child_accept_focus(it, true)))
+      if (does_accept_focus(it) && !(child_accept_focus(it, true)))
         list[c++] = it;
     }
 
@@ -1788,7 +1831,7 @@ static int count_widgets_accept_focus(Widget* widget)
   for (auto child : widget->children())
     count += count_widgets_accept_focus(child);
 
-  if ((count == 0) && (ACCEPT_FOCUS(widget)))
+  if ((count == 0) && (does_accept_focus(widget)))
     count++;
 
   return count;
@@ -1800,7 +1843,7 @@ static bool child_accept_focus(Widget* widget, bool first)
     if (child_accept_focus(child, false))
       return true;
 
-  return (first ? false: ACCEPT_FOCUS(widget));
+  return (first ? false: does_accept_focus(widget));
 }
 
 static Widget* next_widget(Widget* widget)

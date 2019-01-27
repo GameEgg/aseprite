@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -31,6 +32,9 @@
 #include "doc/mask_boundaries.h"
 #include "doc/palette.h"
 #include "doc/sprite.h"
+#include "os/display.h"
+#include "os/system.h"
+#include "ui/system.h"
 
 #include <limits>
 #include <map>
@@ -54,6 +58,8 @@ Doc::Doc(Sprite* sprite)
 
   if (sprite)
     sprites().add(sprite);
+
+  updateOSColorSpace(false);
 }
 
 Doc::~Doc()
@@ -109,6 +115,15 @@ void Doc::notifyGeneralUpdate()
 {
   DocEvent ev(this);
   notify_observers<DocEvent&>(&DocObserver::onGeneralUpdate, ev);
+}
+
+void Doc::notifyColorSpaceChanged()
+{
+  updateOSColorSpace(true);
+
+  DocEvent ev(this);
+  ev.sprite(sprite());
+  notify_observers<DocEvent&>(&DocObserver::onColorSpaceChanged, ev);
 }
 
 void Doc::notifySpritePixelsModified(Sprite* sprite, const gfx::Region& region, frame_t frame)
@@ -386,9 +401,7 @@ Doc* Doc::duplicate(DuplicateType type) const
 {
   const Sprite* sourceSprite = sprite();
   std::unique_ptr<Sprite> spriteCopyPtr(new Sprite(
-      sourceSprite->pixelFormat(),
-      sourceSprite->width(),
-      sourceSprite->height(),
+      sourceSprite->spec(),
       sourceSprite->palette(frame_t(0))->size()));
 
   std::unique_ptr<Doc> documentCopy(new Doc(spriteCopyPtr.get()));
@@ -479,6 +492,30 @@ void Doc::removeFromContext()
     m_ctx = nullptr;
 
     onContextChanged();
+  }
+}
+
+void Doc::updateOSColorSpace(bool appWideSignal)
+{
+  auto system = os::instance();
+  if (system) {
+    m_osColorSpace = system->createColorSpace(sprite()->colorSpace());
+    if (!m_osColorSpace && system->defaultDisplay())
+      m_osColorSpace = system->defaultDisplay()->colorSpace();
+  }
+
+  if (appWideSignal &&
+      context() &&
+      context()->activeDocument() == this) {
+    App::instance()->ColorSpaceChange();
+  }
+
+  if (ui::is_ui_thread()) {
+    // As the color space has changed, we might need to upate the
+    // current palette (because the color space conversion might be
+    // came from a cmd::ConvertColorProfile, so the palette might be
+    // changed). This might generate a PaletteChange() signal.
+    app_update_current_palette();
   }
 }
 

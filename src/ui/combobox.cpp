@@ -1,4 +1,5 @@
 // Aseprite UI Library
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2017  David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -11,7 +12,7 @@
 #include "ui/combobox.h"
 
 #include "gfx/size.h"
-#include "she/font.h"
+#include "os/font.h"
 #include "ui/button.h"
 #include "ui/entry.h"
 #include "ui/listbox.h"
@@ -371,7 +372,8 @@ bool ComboBox::onProcessMessage(Message* msg)
 
           MouseMessage* mouseMsg = static_cast<MouseMessage*>(msg);
           Widget* pick = manager()->pick(mouseMsg->position());
-          return (pick && pick->hasAncestor(this) ? true: false);
+          if (pick && pick->hasAncestor(this))
+            return true;
         }
       }
       break;
@@ -420,23 +422,17 @@ void ComboBox::onResize(ResizeEvent& ev)
 
 void ComboBox::onSizeHint(SizeHintEvent& ev)
 {
-  Size entrySize = m_entry->sizeHint();
-  Size reqSize = entrySize;
+  Size reqSize(0, 0);
 
-  // Get the text-length of every item
-  auto end = m_items.end();
-  for (auto it = m_items.begin(); it != end; ++it) {
-    int item_w =
-      2*guiscale()+
-      font()->textLength((*it)->text().c_str())+
-      16*guiscale();
-
-    reqSize.w = MAX(reqSize.w, item_w);
-  }
+  // Calculate the max required width depending on the text-length of
+  // each item.
+  for (const auto& item : m_items)
+    reqSize |= Entry::sizeHintWithText(m_entry, item->text());
 
   Size buttonSize = m_button->sizeHint();
   reqSize.w += buttonSize.w;
   reqSize.h = MAX(reqSize.h, buttonSize.h);
+
   ev.setSizeHint(reqSize);
 }
 

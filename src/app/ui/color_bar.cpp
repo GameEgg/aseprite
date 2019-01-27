@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -34,7 +35,7 @@
 #include "app/modules/gui.h"
 #include "app/modules/palettes.h"
 #include "app/pref/preferences.h"
-#include "app/transaction.h"
+#include "app/tx.h"
 #include "app/ui/color_spectrum.h"
 #include "app/ui/color_tint_shade_tone.h"
 #include "app/ui/color_wheel.h"
@@ -61,7 +62,7 @@
 #include "doc/rgbmap.h"
 #include "doc/sort_palette.h"
 #include "doc/sprite.h"
-#include "she/surface.h"
+#include "os/surface.h"
 #include "ui/alert.h"
 #include "ui/graphics.h"
 #include "ui/menu.h"
@@ -124,7 +125,7 @@ void ColorBar::ScrollableView::onInitTheme(InitThemeEvent& ev)
 
 ColorBar* ColorBar::m_instance = NULL;
 
-ColorBar::ColorBar(int align)
+ColorBar::ColorBar(int align, TooltipManager* tooltipManager)
   : Box(align)
   , m_buttons(int(PalButton::MAX))
   , m_splitter(Splitter::ByPercentage, VERTICAL)
@@ -155,7 +156,7 @@ ColorBar::ColorBar(int align)
 
   SkinTheme* theme = static_cast<SkinTheme*>(this->theme());
 
-  m_buttons.addItem(theme->parts.palEdit());
+  m_buttons.addItem(theme->parts.timelineOpenPadlockActive());
   m_buttons.addItem(theme->parts.palSort());
   m_buttons.addItem(theme->parts.palPresets());
   m_buttons.addItem(theme->parts.palOptions());
@@ -207,10 +208,10 @@ ColorBar::ColorBar(int align)
   m_redrawTimer.Tick.connect(base::Bind<void>(&ColorBar::onTimerTick, this));
   m_buttons.ItemChange.connect(base::Bind<void>(&ColorBar::onPaletteButtonClick, this));
 
-  m_tooltips.addTooltipFor(&m_fgColor, "Foreground color", LEFT);
-  m_tooltips.addTooltipFor(&m_bgColor, "Background color", LEFT);
-  m_tooltips.addTooltipFor(m_fgWarningIcon, "Add foreground color to the palette", LEFT);
-  m_tooltips.addTooltipFor(m_bgWarningIcon, "Add background color to the palette", LEFT);
+  tooltipManager->addTooltipFor(&m_fgColor, "Foreground color", LEFT);
+  tooltipManager->addTooltipFor(&m_bgColor, "Background color", LEFT);
+  tooltipManager->addTooltipFor(m_fgWarningIcon, "Add foreground color to the palette", LEFT);
+  tooltipManager->addTooltipFor(m_bgWarningIcon, "Add background color to the palette", LEFT);
 
   InitTheme.connect(
     [this, fgBox, bgBox]{
@@ -223,13 +224,13 @@ ColorBar::ColorBar(int align)
       m_bgColor.resetSizeHint();
       m_fgColor.setSizeHint(0, m_fgColor.sizeHint().h);
       m_bgColor.setSizeHint(0, m_bgColor.sizeHint().h);
+      m_buttons.setMinSize(gfx::Size(0, theme->dimensions.colorBarButtonsHeight()));
       m_buttons.setMaxSize(gfx::Size(std::numeric_limits<int>::max(),
                                      std::numeric_limits<int>::max())); // TODO add resetMaxSize
       m_buttons.setMaxSize(gfx::Size(m_buttons.sizeHint().w,
-                                     16*ui::guiscale()));
+                                     theme->dimensions.colorBarButtonsHeight()));
 
-      // TODO hardcoded scroll bar width should be get from skin.xml file
-      int scrollBarWidth = 6*guiscale();
+      int scrollBarWidth = theme->dimensions.miniScrollbarSize();
       m_scrollableView.horizontalBar()->setBarWidth(scrollBarWidth);
       m_scrollableView.verticalBar()->setBarWidth(scrollBarWidth);
 
@@ -261,8 +262,6 @@ ColorBar::ColorBar(int align)
   setFgColor(Preferences::instance().colorBar.fgColor());
 
   // Tooltips
-  TooltipManager* tooltipManager = new TooltipManager();
-  addChild(tooltipManager);
   setupTooltips(tooltipManager);
 
   onColorButtonChange(getFgColor());
@@ -541,7 +540,7 @@ void ColorBar::onRemapButtonClick()
     if (sprite) {
       ASSERT(sprite->pixelFormat() == IMAGE_INDEXED);
 
-      Transaction transaction(writer.context(), "Remap Colors", ModifyDocument);
+      Tx tx(writer.context(), "Remap Colors", ModifyDocument);
       bool remapPixels = true;
 
       if (remap.isFor8bit()) {
@@ -553,7 +552,7 @@ void ColorBar::onRemapButtonClick()
         }
 
         if (remap.isInvertible(usedEntries)) {
-          transaction.execute(new cmd::RemapColors(sprite, remap));
+          tx(new cmd::RemapColors(sprite, remap));
           remapPixels = false;
         }
       }
@@ -565,17 +564,17 @@ void ColorBar::onRemapButtonClick()
           ImageRef newImage(Image::createCopy(celImage.get()));
           doc::remap_image(newImage.get(), remap);
 
-          transaction.execute(new cmd::ReplaceImage(
-                                sprite, celImage, newImage));
+          tx(new cmd::ReplaceImage(
+               sprite, celImage, newImage));
         }
       }
 
       color_t oldTransparent = sprite->transparentColor();
       color_t newTransparent = remap[oldTransparent];
       if (oldTransparent != newTransparent)
-        transaction.execute(new cmd::SetTransparentColor(sprite, newTransparent));
+        tx(new cmd::SetTransparentColor(sprite, newTransparent));
 
-      transaction.commit();
+      tx.commit();
     }
     update_screen_for_document(writer.document());
     hideRemap();
@@ -625,9 +624,9 @@ void ColorBar::setPalette(const doc::Palette* newPalette, const std::string& act
     frame_t frame = writer.frame();
     if (sprite &&
         newPalette->countDiff(sprite->palette(frame), nullptr, nullptr)) {
-      Transaction transaction(writer.context(), actionText, ModifyDocument);
-      transaction.execute(new cmd::SetPalette(sprite, frame, newPalette));
-      transaction.commit();
+      Tx tx(writer.context(), actionText, ModifyDocument);
+      tx(new cmd::SetPalette(sprite, frame, newPalette));
+      tx.commit();
     }
   }
   catch (base::Exception& e) {
@@ -647,10 +646,10 @@ void ColorBar::setTransparentIndex(int index)
         sprite->pixelFormat() == IMAGE_INDEXED &&
         int(sprite->transparentColor()) != index) {
       // TODO merge this code with SpritePropertiesCommand
-      Transaction transaction(writer.context(), "Set Transparent Color");
-      DocApi api = writer.document()->getApi(transaction);
+      Tx tx(writer.context(), "Set Transparent Color");
+      DocApi api = writer.document()->getApi(tx);
       api.setSpriteTransparentColor(sprite, index);
-      transaction.commit();
+      tx.commit();
 
       update_screen_for_document(writer.document());
     }
@@ -1180,9 +1179,9 @@ void ColorBar::updateCurrentSpritePalette(const char* operationName)
           cmd->execute(UIContext::instance());
         }
         else {
-          Transaction transaction(writer.context(), operationName, ModifyDocument);
-          transaction.execute(cmd);
-          transaction.commit();
+          Tx tx(writer.context(), operationName, ModifyDocument);
+          tx(cmd);
+          tx.commit();
         }
       }
     }

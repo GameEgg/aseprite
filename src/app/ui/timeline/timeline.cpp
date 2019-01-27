@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -49,9 +50,9 @@
 #include "doc/frame_tag.h"
 #include "gfx/point.h"
 #include "gfx/rect.h"
-#include "she/font.h"
-#include "she/surface.h"
-#include "she/system.h"
+#include "os/font.h"
+#include "os/surface.h"
+#include "os/system.h"
 #include "ui/scroll_helper.h"
 #include "ui/ui.h"
 
@@ -226,7 +227,7 @@ bool Timeline::Row::parentEditable() const
   return ((int(m_inheritedFlags) & int(LayerFlags::Editable)) != 0);
 }
 
-Timeline::Timeline()
+Timeline::Timeline(TooltipManager* tooltipManager)
   : Widget(kGenericWidget)
   , m_hbar(HORIZONTAL, this)
   , m_vbar(VERTICAL, this)
@@ -239,7 +240,8 @@ Timeline::Timeline()
   , m_state(STATE_STANDBY)
   , m_tagBands(0)
   , m_tagFocusBand(-1)
-  , m_separator_x(100 * guiscale())
+  , m_separator_x(
+      Preferences::instance().general.timelineLayerPanelWidth() * guiscale())
   , m_separator_w(1)
   , m_confPopup(NULL)
   , m_clipboard_timer(100, this)
@@ -247,6 +249,7 @@ Timeline::Timeline()
   , m_redrawMarchingAntsOnly(false)
   , m_scroll(false)
   , m_fromTimeline(false)
+  , m_aniControls(tooltipManager)
 {
   enableFlags(CTRL_RIGHT_CLICK);
 
@@ -267,6 +270,9 @@ Timeline::Timeline()
 
 Timeline::~Timeline()
 {
+  Preferences::instance().general.timelineLayerPanelWidth(
+    m_separator_x / guiscale());
+
   m_clipboard_timer.stop();
 
   detachDocument();
@@ -624,7 +630,7 @@ bool Timeline::onProcessMessage(Message* msg)
         break;
 
       if (mouseMsg->middle() ||
-          she::instance()->isKeyPressed(kKeySpace)) {
+          os::instance()->isKeyPressed(kKeySpace)) {
         captureMouse();
         m_state = STATE_SCROLLING;
         m_oldPos = static_cast<MouseMessage*>(msg)->position();
@@ -867,6 +873,13 @@ bool Timeline::onProcessMessage(Message* msg)
 
               setLayerCollapsedFlag(m_clk.layer, m_state == STATE_COLLAPSING_LAYERS);
               updateByMousePos(msg, ui::get_mouse_position() - bounds().origin());
+
+              // The m_clk might have changed because we've
+              // expanded/collapsed a group just right now (i.e. we've
+              // called regenerateRows())
+              m_clk = m_hot;
+
+              ASSERT(m_rows[m_clk.layer].layer() == layer);
             }
           }
           break;
@@ -1050,27 +1063,45 @@ bool Timeline::onProcessMessage(Message* msg)
         switch (m_state) {
 
             case STATE_MOVING_RANGE: {
-                frame_t firstDrawableFrame;
-                frame_t lastDrawableFrame;
-                getDrawableFrames(&firstDrawableFrame, &lastDrawableFrame);
+                frame_t newFrame;
+                if (m_range.type() == Range::kLayers) {
+                  // If we are moving only layers we don't change the
+                  // current frame.
+                  newFrame = m_frame;
+                }
+                else {
+                  frame_t firstDrawableFrame;
+                  frame_t lastDrawableFrame;
+                  getDrawableFrames(&firstDrawableFrame, &lastDrawableFrame);
 
-                layer_t firstDrawableLayer;
-                layer_t lastDrawableLayer;
-                getDrawableLayers(&firstDrawableLayer, &lastDrawableLayer);
-
-                layer_t newLayer = hit.layer;
-                frame_t newFrame = hit.frame;
-
-                if (hit.frame < firstDrawableFrame)
+                  if (hit.frame < firstDrawableFrame)
                     newFrame = firstDrawableFrame - 1;
-                else if (hit.frame > lastDrawableFrame)
+                  else if (hit.frame > lastDrawableFrame)
                     newFrame = lastDrawableFrame + 1;
-                if (hit.layer < firstDrawableLayer)
-                    newLayer = firstDrawableLayer - 1;
-                else if (hit.layer > lastDrawableLayer)
-                    newLayer = lastDrawableLayer + 1;
+                  else
+                    newFrame = hit.frame;
+                }
 
-                showCel(newLayer,newFrame);
+                layer_t newLayer;
+                if (m_range.type() == Range::kFrames) {
+                  // If we are moving only frames we don't change the
+                  // current layer.
+                  newLayer = getLayerIndex(m_layer);
+                }
+                else {
+                  layer_t firstDrawableLayer;
+                  layer_t lastDrawableLayer;
+                  getDrawableLayers(&firstDrawableLayer, &lastDrawableLayer);
+
+                  if (hit.layer < firstDrawableLayer)
+                    newLayer = firstDrawableLayer - 1;
+                  else if (hit.layer > lastDrawableLayer)
+                    newLayer = lastDrawableLayer + 1;
+                  else
+                    newLayer = hit.layer;
+                }
+
+                showCel(newLayer, newFrame);
                 break;
             }
 
@@ -1381,9 +1412,6 @@ bool Timeline::onProcessMessage(Message* msg)
 
         case kKeySpace: {
           m_scroll = false;
-
-          // We have to clear all the kKeySpace keys in buffer.
-          she::instance()->clearKeyboardBuffer();
           used = true;
           break;
         }
@@ -2204,7 +2232,7 @@ void Timeline::drawCel(ui::Graphics* g, layer_t layerIndex, frame_t frame, Cel* 
         skinTheme()->calcBorder(this, style));
 
     if (!thumb_bounds.isEmpty()) {
-      she::Surface* thumb_surf = thumb::get_cel_thumbnail(cel, thumb_bounds.size());
+      os::Surface* thumb_surf = thumb::get_cel_thumbnail(cel, thumb_bounds.size());
       if (thumb_surf) {
         g->drawRgbaSurface(thumb_surf, thumb_bounds.x, thumb_bounds.y);
         thumb_surf->dispose();
@@ -2314,7 +2342,7 @@ void Timeline::drawCelOverlay(ui::Graphics* g)
     (int)(image->height() * scale)
   );
 
-  she::Surface* overlay_surf = thumb::get_cel_thumbnail(cel, overlay_size, cel_image_on_overlay);
+  os::Surface* overlay_surf = thumb::get_cel_thumbnail(cel, overlay_size, cel_image_on_overlay);
 
   g->drawRgbaSurface(overlay_surf,
     m_thumbnailsOverlayInner.x, m_thumbnailsOverlayInner.y);
@@ -3375,7 +3403,7 @@ void Timeline::updateStatusBar(ui::Message* msg)
     }
   }
 
-  sb->clearText();
+  sb->showDefaultText();
 }
 
 void Timeline::updateStatusBarForFrame(const frame_t frame,

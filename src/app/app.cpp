@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -10,6 +11,7 @@
 
 #include "app/app.h"
 
+#include "app/app_mod.h"
 #include "app/check_update.h"
 #include "app/cli/app_options.h"
 #include "app/cli/cli_processor.h"
@@ -51,7 +53,6 @@
 #include "app/ui/workspace.h"
 #include "app/ui_context.h"
 #include "app/util/clipboard.h"
-#include "app/webserver.h"
 #include "base/exception.h"
 #include "base/fs.h"
 #include "base/scoped_lock.h"
@@ -59,10 +60,10 @@
 #include "doc/sprite.h"
 #include "fmt/format.h"
 #include "render/render.h"
-#include "she/display.h"
-#include "she/error.h"
-#include "she/surface.h"
-#include "she/system.h"
+#include "os/display.h"
+#include "os/error.h"
+#include "os/surface.h"
+#include "os/system.h"
 #include "ui/intern.h"
 #include "ui/ui.h"
 
@@ -70,9 +71,8 @@
 #include <memory>
 
 #ifdef ENABLE_SCRIPTING
-  #include "app/script/app_scripting.h"
+  #include "app/script/engine.h"
   #include "app/shell.h"
-  #include "script/engine_delegate.h"
 #endif
 
 #ifdef ENABLE_STEAM
@@ -82,6 +82,23 @@
 namespace app {
 
 using namespace ui;
+
+#ifdef ENABLE_SCRIPTING
+
+namespace {
+
+class ConsoleEngineDelegate : public script::EngineDelegate {
+public:
+  void onConsolePrint(const char* text) override {
+    m_console.printf("%s\n", text);
+  }
+private:
+  Console m_console;
+};
+
+} // anonymous namespace
+
+#endif // ENABLER_SCRIPTING
 
 class App::CoreModules {
 public:
@@ -158,16 +175,20 @@ public:
 
 };
 
-App* App::m_instance = NULL;
+App* App::m_instance = nullptr;
 
-App::App()
-  : m_coreModules(NULL)
-  , m_modules(NULL)
-  , m_legacy(NULL)
+App::App(AppMod* mod)
+  : m_mod(mod)
+  , m_coreModules(nullptr)
+  , m_modules(nullptr)
+  , m_legacy(nullptr)
   , m_isGui(false)
   , m_isShell(false)
 #ifdef ENABLE_UI
   , m_backupIndicator(nullptr)
+#endif
+#ifdef ENABLE_SCRIPTING
+  , m_engine(new script::Engine)
 #endif
 {
   ASSERT(m_instance == NULL);
@@ -187,7 +208,7 @@ void App::initialize(const AppOptions& options)
 #ifdef _WIN32
   if (options.disableWintab() ||
       !preferences().experimental.loadWintabDriver()) {
-    she::instance()->useWintabAPI(false);
+    os::instance()->useWintabAPI(false);
   }
 #endif
 
@@ -242,8 +263,10 @@ void App::initialize(const AppOptions& options)
 
     ui::Manager::getDefault()->invalidate();
 
-    // Create the main window and show it.
+    // Create the main window.
     m_mainWindow.reset(new MainWindow);
+    if (m_mod)
+      m_mod->modMainWindow(m_mainWindow.get());
 
     // Default status of the main window.
     app_rebuild_documents_tabs();
@@ -273,7 +296,7 @@ void App::initialize(const AppOptions& options)
     cli.process(&m_modules->m_context);
   }
 
-  she::instance()->finishLaunching();
+  os::instance()->finishLaunching();
 }
 
 void App::run()
@@ -291,14 +314,14 @@ void App::run()
 #if !defined(_WIN32) && !defined(__APPLE__)
     // Setup app icon for Linux window managers
     try {
-      she::Display* display = she::instance()->defaultDisplay();
-      she::SurfaceList icons;
+      os::Display* display = os::instance()->defaultDisplay();
+      os::SurfaceList icons;
 
       for (const int size : { 32, 64, 128 }) {
         ResourceFinder rf;
         rf.includeDataDir(fmt::format("icons/ase{0}.png", size).c_str());
         if (rf.findFirst()) {
-          she::Surface* surf = she::instance()->loadRgbaSurface(rf.filename().c_str());
+          os::Surface* surf = os::instance()->loadRgbaSurface(rf.filename().c_str());
           if (surf)
             icons.push_back(surf);
         }
@@ -319,13 +342,13 @@ void App::run()
 #ifdef ENABLE_STEAM
     steam::SteamAPI steam;
     if (steam.initialized())
-      she::instance()->activateApp();
+      os::instance()->activateApp();
 #endif
 
 #if ENABLE_DEVMODE
     // On OS X, when we compile Aseprite on devmode, we're using it
     // outside an app bundle, so we must active the app explicitly.
-    she::instance()->activateApp();
+    os::instance()->activateApp();
 #endif
 
 #ifdef ENABLE_UPDATER
@@ -335,14 +358,17 @@ void App::run()
     checkUpdate.launch();
 #endif
 
-#ifdef ENABLE_WEBSERVER
-    // Launch the webserver.
-    app::WebServer webServer;
-    webServer.start();
-#endif
-
     app::SendCrash sendCrash;
     sendCrash.search();
+
+    // Keep the console alive the whole program execute (just in case
+    // we've to print errors).
+    Console console;
+#ifdef ENABLE_SCRIPTING
+    // Use the app::Console() for script erros
+    ConsoleEngineDelegate delegate;
+    script::ScopedEngineDelegate setEngineDelegate(m_engine.get(), &delegate);
+#endif
 
     // Run the GUI main message loop
     ui::Manager::getDefault()->run();
@@ -352,11 +378,9 @@ void App::run()
 #ifdef ENABLE_SCRIPTING
   // Start shell to execute scripts.
   if (m_isShell) {
-    script::StdoutEngineDelegate delegate;
-    AppScripting engine(&delegate);
-    engine.printLastResult();
+    m_engine->printLastResult(); // TODO is this needed?
     Shell shell;
-    shell.run(engine);
+    shell.run(*m_engine);
   }
 #endif  // ENABLE_SCRIPTING
 
@@ -399,6 +423,11 @@ App::~App()
     LOG("APP: Exit\n");
     ASSERT(m_instance == this);
 
+#ifdef ENABLE_SCRIPTING
+    // Destroy scripting engine
+    m_engine.reset(nullptr);
+#endif
+
     // Delete file formats.
     FileFormatsManager::destroyInstance();
 
@@ -432,12 +461,12 @@ App::~App()
   }
   catch (const std::exception& e) {
     LOG(ERROR) << "APP: Error: " << e.what() << "\n";
-    she::error_message(e.what());
+    os::error_message(e.what());
 
     // no re-throw
   }
   catch (...) {
-    she::error_message("Error closing " PACKAGE ".\n(uncaught exception)");
+    os::error_message("Error closing " PACKAGE ".\n(uncaught exception)");
 
     // no re-throw
   }
@@ -546,7 +575,7 @@ void App::showNotification(INotificationDelegate* del)
 
 void App::showBackupNotification(bool state)
 {
-  base::scoped_lock lock(m_backupIndicatorMutex);
+  assert_ui_thread();
   if (state) {
     if (!m_backupIndicator)
       m_backupIndicator = new BackupIndicator;
@@ -571,7 +600,7 @@ void App::updateDisplayTitleBar()
   }
 
   title += defaultTitle;
-  she::instance()->defaultDisplay()->setTitleBar(title);
+  os::instance()->defaultDisplay()->setTitleBar(title);
 }
 
 InputChain& App::inputChain()
@@ -580,8 +609,7 @@ InputChain& App::inputChain()
 }
 #endif
 
-// Updates palette and redraw the screen.
-void app_refresh_screen()
+void app_update_current_palette()
 {
 #ifdef ENABLE_UI
   Context* context = UIContext::instance();
@@ -592,7 +620,15 @@ void app_refresh_screen()
   if (Palette* pal = site.palette())
     set_current_palette(pal, false);
   else
-    set_current_palette(NULL, false);
+    set_current_palette(nullptr, false);
+#endif // ENABLE_UI
+}
+
+// Updates palette and redraw the screen.
+void app_refresh_screen()
+{
+#ifdef ENABLE_UI
+  app_update_current_palette();
 
   // Invalidate the whole screen.
   ui::Manager::getDefault()->invalidate();

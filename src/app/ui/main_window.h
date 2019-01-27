@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -15,6 +16,7 @@
 
 namespace ui {
   class Splitter;
+  class TooltipManager;
 }
 
 namespace app {
@@ -90,6 +92,7 @@ namespace app {
     void onContextMenuTab(Tabs* tabs, TabView* tabView) override;
     void onTabsContainerDoubleClicked(Tabs* tabs) override;
     void onMouseOverTab(Tabs* tabs, TabView* tabView) override;
+    void onMouseLeaveTab() override;
     DropViewPreviewResult onFloatingTab(Tabs* tabs, TabView* tabView, const gfx::Point& pos) override;
     void onDockingTab(Tabs* tabs, TabView* tabView) override;
     DropTabResult onDropTab(Tabs* tabs, TabView* tabView, const gfx::Point& pos, bool clone) override;
@@ -106,6 +109,7 @@ namespace app {
     HomeView* getHomeView();
     void configureWorkspaceLayout();
 
+    ui::TooltipManager* m_tooltipManager;
     MainMenuBar* m_menuBar;
     ContextBar* m_contextBar;
     StatusBar* m_statusBar;

@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -35,19 +36,20 @@
 #include "app/ui/dithering_selector.h"
 #include "app/ui/icon_button.h"
 #include "app/ui/keyboard_shortcuts.h"
+#include "app/ui/selection_mode_field.h"
 #include "app/ui/skin/skin_theme.h"
 #include "app/ui_context.h"
 #include "base/bind.h"
 #include "base/scoped_value.h"
 #include "doc/brush.h"
-#include "doc/conversion_she.h"
+#include "doc/conversion_to_surface.h"
 #include "doc/image.h"
 #include "doc/palette.h"
 #include "doc/remap.h"
 #include "obs/connection.h"
+#include "os/surface.h"
+#include "os/system.h"
 #include "render/dithering.h"
-#include "she/surface.h"
-#include "she/system.h"
 #include "ui/button.h"
 #include "ui/combobox.h"
 #include "ui/int_entry.h"
@@ -158,10 +160,6 @@ public:
     getItem(0)->setIcon(part, mono);
   }
 
-  void setupTooltips(TooltipManager* tooltipManager) {
-    m_popupWindow.setupTooltips(tooltipManager);
-  }
-
   void showPopup() {
     openPopup();
   }
@@ -182,7 +180,9 @@ protected:
   }
 
   void onSizeHint(SizeHintEvent& ev) override {
-    ev.setSizeHint(Size(16, 18)*guiscale());
+    SkinTheme* theme = static_cast<SkinTheme*>(this->theme());
+    ev.setSizeHint(Size(theme->dimensions.brushTypeWidth(),
+                        theme->dimensions.contextBarHeight()));
   }
 
   void onInitTheme(InitThemeEvent& ev) override {
@@ -669,7 +669,8 @@ protected:
 
 class ContextBar::TransparentColorField : public HBox {
 public:
-  TransparentColorField(ContextBar* owner)
+  TransparentColorField(ContextBar* owner,
+                        TooltipManager* tooltipManager)
     : m_icon(1)
     , m_maskColor(app::Color::fromMask(), IMAGE_RGB, ColorButtonOptions())
     , m_owner(owner) {
@@ -690,6 +691,9 @@ public:
       base::Bind<void>(&TransparentColorField::onOpaqueChange, this));
 
     onOpaqueChange();
+
+    tooltipManager->addTooltipFor(m_icon.at(0), "Transparent Color Options", BOTTOM);
+    tooltipManager->addTooltipFor(&m_maskColor, "Transparent Color", BOTTOM);
   }
 
 private:
@@ -887,10 +891,6 @@ public:
     initTheme();
   }
 
-  void setupTooltips(TooltipManager* tooltipManager) {
-    // Do nothing
-  }
-
   void setFreehandAlgorithm(tools::FreehandAlgorithm algo) {
     switch (algo) {
       case tools::FreehandAlgorithm::DEFAULT:
@@ -924,40 +924,12 @@ protected:
   }
 };
 
-class ContextBar::SelectionModeField : public ButtonSet {
+class ContextBar::SelectionModeField : public app::SelectionModeField {
 public:
-  SelectionModeField() : ButtonSet(3) {
-    SkinTheme* theme = static_cast<SkinTheme*>(this->theme());
-
-    addItem(theme->parts.selectionReplace());
-    addItem(theme->parts.selectionAdd());
-    addItem(theme->parts.selectionSubtract());
-
-    setSelectedItem((int)Preferences::instance().selection.mode());
-  }
-
-  void setupTooltips(TooltipManager* tooltipManager) {
-    tooltipManager->addTooltipFor(
-      at(0), "Replace selection", BOTTOM);
-
-    tooltipManager->addTooltipFor(
-      at(1), key_tooltip("Add to selection", KeyAction::AddSelection), BOTTOM);
-
-    tooltipManager->addTooltipFor(
-      at(2), key_tooltip("Subtract from selection", KeyAction::SubtractSelection), BOTTOM);
-  }
-
-  void setSelectionMode(gen::SelectionMode mode) {
-    setSelectedItem((int)mode, false);
-    invalidate();
-  }
-
+  SelectionModeField() { }
 protected:
-  void onItemChange(Item* item) override {
-    ButtonSet::onItemChange(item);
-
-    Preferences::instance().selection.mode(
-      (gen::SelectionMode)selectedItem());
+  void onSelectionModeChange(gen::SelectionMode mode) override {
+    Preferences::instance().selection.mode(mode);
   }
 };
 
@@ -1106,13 +1078,13 @@ private:
   }
 };
 
-ContextBar::ContextBar()
+ContextBar::ContextBar(TooltipManager* tooltipManager)
   : Box(HORIZONTAL)
 {
   addChild(m_selectionOptionsBox = new HBox());
   m_selectionOptionsBox->addChild(m_dropPixels = new DropPixelsField());
   m_selectionOptionsBox->addChild(m_selectionMode = new SelectionModeField);
-  m_selectionOptionsBox->addChild(m_transparentColor = new TransparentColorField(this));
+  m_selectionOptionsBox->addChild(m_transparentColor = new TransparentColorField(this, tooltipManager));
   m_selectionOptionsBox->addChild(m_pivot = new PivotField);
   m_selectionOptionsBox->addChild(m_rotAlgo = new RotAlgorithmField());
 
@@ -1156,9 +1128,6 @@ ContextBar::ContextBar()
 
   addChild(m_symmetry = new SymmetryField());
   m_symmetry->setVisible(Preferences::instance().symmetryMode.enabled());
-
-  TooltipManager* tooltipManager = new TooltipManager();
-  addChild(tooltipManager);
 
   setupTooltips(tooltipManager);
 
@@ -1204,7 +1173,8 @@ void ContextBar::onInitTheme(ui::InitThemeEvent& ev)
 
 void ContextBar::onSizeHint(SizeHintEvent& ev)
 {
-  ev.setSizeHint(gfx::Size(0, 18*guiscale())); // TODO calculate height
+  SkinTheme* theme = static_cast<SkinTheme*>(this->theme());
+  ev.setSizeHint(gfx::Size(0, theme->dimensions.contextBarHeight()));
 }
 
 void ContextBar::onToolSetOpacity(const int& newOpacity)
@@ -1502,14 +1472,13 @@ void ContextBar::updateForSelectingBox(const std::string& text)
 
 void ContextBar::updateToolLoopModifiersIndicators(tools::ToolLoopModifiers modifiers)
 {
-  if (!m_selectionMode->isVisible())
-    return;
-
   gen::SelectionMode mode = gen::SelectionMode::DEFAULT;
   if (int(modifiers) & int(tools::ToolLoopModifiers::kAddSelection))
     mode = gen::SelectionMode::ADD;
   else if (int(modifiers) & int(tools::ToolLoopModifiers::kSubtractSelection))
     mode = gen::SelectionMode::SUBTRACT;
+  else if (int(modifiers) & int(tools::ToolLoopModifiers::kIntersectSelection))
+    mode = gen::SelectionMode::INTERSECT;
 
   m_selectionMode->setSelectionMode(mode);
 }
@@ -1751,17 +1720,16 @@ render::DitheringAlgorithmBase* ContextBar::ditheringAlgorithm()
 
 void ContextBar::setupTooltips(TooltipManager* tooltipManager)
 {
-  tooltipManager->addTooltipFor(m_brushBack, "Discard Brush (Esc)", BOTTOM);
-  tooltipManager->addTooltipFor(m_brushType, "Brush Type", BOTTOM);
+  tooltipManager->addTooltipFor(m_brushBack->at(0), "Discard Brush (Esc)", BOTTOM);
+  tooltipManager->addTooltipFor(m_brushType->at(0), "Brush Type", BOTTOM);
   tooltipManager->addTooltipFor(m_brushSize, "Brush Size (in pixels)", BOTTOM);
   tooltipManager->addTooltipFor(m_brushAngle, "Brush Angle (in degrees)", BOTTOM);
-  tooltipManager->addTooltipFor(m_inkType, "Ink", BOTTOM);
+  tooltipManager->addTooltipFor(m_inkType->at(0), "Ink", BOTTOM);
   tooltipManager->addTooltipFor(m_inkOpacity, "Opacity (paint intensity)", BOTTOM);
-  tooltipManager->addTooltipFor(m_inkShades, "Shades", BOTTOM);
+  tooltipManager->addTooltipFor(m_inkShades->at(0), "Shades", BOTTOM);
   tooltipManager->addTooltipFor(m_sprayWidth, "Spray Width", BOTTOM);
   tooltipManager->addTooltipFor(m_spraySpeed, "Spray Speed", BOTTOM);
-  tooltipManager->addTooltipFor(m_pivot, "Rotation Pivot", BOTTOM);
-  tooltipManager->addTooltipFor(m_transparentColor, "Transparent Color", BOTTOM);
+  tooltipManager->addTooltipFor(m_pivot->at(0), "Rotation Pivot", BOTTOM);
   tooltipManager->addTooltipFor(m_rotAlgo, "Rotation Algorithm", BOTTOM);
   tooltipManager->addTooltipFor(m_freehandAlgo,
                                 key_tooltip("Freehand trace algorithm",
@@ -1769,13 +1737,11 @@ void ContextBar::setupTooltips(TooltipManager* tooltipManager)
   tooltipManager->addTooltipFor(m_contiguous,
                                 key_tooltip("Fill contiguous areas color",
                                             CommandId::ContiguousFill()), BOTTOM);
-  tooltipManager->addTooltipFor(m_paintBucketSettings,
+  tooltipManager->addTooltipFor(m_paintBucketSettings->at(0),
                                 "Extra paint bucket options", BOTTOM);
 
-  m_brushType->setupTooltips(tooltipManager);
   m_selectionMode->setupTooltips(tooltipManager);
   m_dropPixels->setupTooltips(tooltipManager);
-  m_freehandAlgo->setupTooltips(tooltipManager);
   m_symmetry->setupTooltips(tooltipManager);
 }
 

@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -35,13 +36,16 @@
 #include "app/ui/status_bar.h"
 #include "app/ui/toolbar.h"
 #include "app/ui_context.h"
+#include "base/clamp.h"
+#include "base/fs.h"
 #include "base/memory.h"
 #include "base/shared_ptr.h"
+#include "base/string.h"
 #include "doc/sprite.h"
-#include "she/display.h"
-#include "she/error.h"
-#include "she/surface.h"
-#include "she/system.h"
+#include "os/display.h"
+#include "os/error.h"
+#include "os/surface.h"
+#include "os/system.h"
 #include "ui/intern.h"
 #include "ui/ui.h"
 
@@ -89,7 +93,7 @@ protected:
   void saveLayout(Widget* widget, const std::string& str) override;
 };
 
-static she::Display* main_display = NULL;
+static os::Display* main_display = NULL;
 static CustomizedGuiManager* manager = NULL;
 static Theme* gui_theme = NULL;
 
@@ -113,15 +117,15 @@ static bool create_main_display(bool gpuAccel,
   // executed.
   int scale = Preferences::instance().general.screenScale();
 
-  she::instance()->setGpuAcceleration(gpuAccel);
+  os::instance()->setGpuAcceleration(gpuAccel);
 
   try {
     if (w > 0 && h > 0) {
-      main_display = she::instance()->createDisplay(
+      main_display = os::instance()->createDisplay(
         w, h, (scale == 0 ? 2: MID(1, scale, 4)));
     }
   }
-  catch (const she::DisplayCreationException& e) {
+  catch (const os::DisplayCreationException& e) {
     lastError = e.what();
   }
 
@@ -129,13 +133,13 @@ static bool create_main_display(bool gpuAccel,
     for (int c=0; try_resolutions[c].width; ++c) {
       try {
         main_display =
-          she::instance()->createDisplay(
+          os::instance()->createDisplay(
             try_resolutions[c].width,
             try_resolutions[c].height,
             (scale == 0 ? try_resolutions[c].scale: scale));
         break;
       }
-      catch (const she::DisplayCreationException& e) {
+      catch (const os::DisplayCreationException& e) {
         lastError = e.what();
       }
     }
@@ -169,8 +173,8 @@ int init_module_gui()
     // If we've created the display with hardware acceleration,
     // now we try to do it without hardware acceleration.
     if (gpuAccel &&
-        (int(she::instance()->capabilities()) &
-         int(she::Capabilities::GpuAccelerationSwitch)) == int(she::Capabilities::GpuAccelerationSwitch)) {
+        (int(os::instance()->capabilities()) &
+         int(os::Capabilities::GpuAccelerationSwitch)) == int(os::Capabilities::GpuAccelerationSwitch)) {
       if (create_main_display(false, maximized, lastError)) {
         // Disable hardware acceleration
         pref.general.gpuAcceleration(false);
@@ -179,7 +183,7 @@ int init_module_gui()
   }
 
   if (!main_display) {
-    she::error_message(
+    os::error_message(
       ("Unable to create a user-interface display.\nDetails: "+lastError+"\n").c_str());
     return -1;
   }
@@ -218,7 +222,7 @@ void exit_module_gui()
 static void load_gui_config(int& w, int& h, bool& maximized,
                             std::string& windowLayout)
 {
-  gfx::Size defSize = she::instance()->defaultNewDisplaySize();
+  gfx::Size defSize = os::instance()->defaultNewDisplaySize();
 
   w = get_config_int("GfxMode", "Width", defSize.w);
   h = get_config_int("GfxMode", "Height", defSize.h);
@@ -228,7 +232,7 @@ static void load_gui_config(int& w, int& h, bool& maximized,
 
 static void save_gui_config()
 {
-  she::Display* display = manager->getDisplay();
+  os::Display* display = manager->getDisplay();
   if (display) {
     set_config_bool("GfxMode", "Maximized", display->isMaximized());
     set_config_int("GfxMode", "Width", display->originalWidth());
@@ -260,7 +264,8 @@ void update_screen_for_document(const Doc* document)
   }
 }
 
-void load_window_pos(Widget* window, const char *section)
+void load_window_pos(Widget* window, const char* section,
+                     const bool limitMinSize)
 {
   // Default position
   Rect orig_pos = window->bounds();
@@ -269,11 +274,17 @@ void load_window_pos(Widget* window, const char *section)
   // Load configurated position
   pos = get_config_rect(section, "WindowPos", pos);
 
-  pos.w = MID(orig_pos.w, pos.w, ui::display_w());
-  pos.h = MID(orig_pos.h, pos.h, ui::display_h());
+  if (limitMinSize) {
+    pos.w = base::clamp(pos.w, orig_pos.w, ui::display_w());
+    pos.h = base::clamp(pos.h, orig_pos.h, ui::display_h());
+  }
+  else {
+    pos.w = std::min(pos.w, ui::display_w());
+    pos.h = std::min(pos.h, ui::display_h());
+  }
 
-  pos.setOrigin(Point(MID(0, pos.x, ui::display_w()-pos.w),
-      MID(0, pos.y, ui::display_h()-pos.h)));
+  pos.setOrigin(Point(base::clamp(pos.x, 0, ui::display_w()-pos.w),
+                      base::clamp(pos.y, 0, ui::display_h()-pos.h)));
 
   window->setBounds(pos);
 }
@@ -327,10 +338,13 @@ bool CustomizedGuiManager::onProcessMessage(Message* msg)
       break;
 
     case kDropFilesMessage:
-      {
+      // Files are processed only when the main window is the current
+      // window running.
+      //
+      // TODO could we send the files to each dialog?
+      if (getForegroundWindow() == App::instance()->mainWindow()) {
         base::paths files = static_cast<DropFilesMessage*>(msg)->files();
         UIContext* ctx = UIContext::instance();
-        OpenFileCommand cmd;
 
         while (!files.empty()) {
           auto fn = files.front();
@@ -348,16 +362,31 @@ bool CustomizedGuiManager::onProcessMessage(Message* msg)
           }
           // Load the file
           else {
-            Params params;
-            params.set("filename", fn.c_str());
-            params.set("repeat_checkbox", "true");
-            ctx->executeCommand(&cmd, params);
+            // Depending on the file type we will want to do different things:
+            std::string extension = base::string_to_lower(
+              base::get_file_extension(fn));
 
-            // Remove all used file names from the "dropped files"
-            for (const auto& usedFn : cmd.usedFiles()) {
-              auto it = std::find(files.begin(), files.end(), usedFn);
-              if (it != files.end())
-                files.erase(it);
+            // Install the extension
+            if (extension == "aseprite-extension") {
+              Command* cmd = Commands::instance()->byId(CommandId::Options());
+              Params params;
+              params.set("installExtension", fn.c_str());
+              ctx->executeCommand(cmd, params);
+            }
+            // Other extensions will be handled as an image/sprite
+            else {
+              OpenFileCommand cmd;
+              Params params;
+              params.set("filename", fn.c_str());
+              params.set("repeat_checkbox", "true");
+              ctx->executeCommand(&cmd, params);
+
+              // Remove all used file names from the "dropped files"
+              for (const auto& usedFn : cmd.usedFiles()) {
+                auto it = std::find(files.begin(), files.end(), usedFn);
+                if (it != files.end())
+                  files.erase(it);
+              }
             }
           }
         }
@@ -455,7 +484,7 @@ bool CustomizedGuiManager::onProcessMessage(Message* msg)
 
     case kTimerMessage:
       if (static_cast<TimerMessage*>(msg)->timer() == defered_invalid_timer) {
-        invalidateDisplayRegion(defered_invalid_region);
+        invalidateRegion(defered_invalid_region);
         defered_invalid_region.clear();
         defered_invalid_timer->stop();
       }
@@ -482,7 +511,7 @@ bool CustomizedGuiManager::onProcessDevModeKeyDown(KeyMessage* msg)
   if (msg->ctrlPressed() &&
       msg->scancode() == kKeyF1) {
     try {
-      she::Display* display = getDisplay();
+      os::Display* display = getDisplay();
       int screenScale = display->scale();
       int uiScale = ui::guiscale();
 

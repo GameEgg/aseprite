@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2016-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -27,8 +28,8 @@
 #include "doc/sprite.h"
 
 #ifdef ENABLE_SCRIPTING
-  #include "app/script/app_scripting.h"
-  #include "script/engine_delegate.h"
+  #include "app/app.h"
+  #include "app/script/engine.h"
 #endif
 
 #include <iostream>
@@ -92,6 +93,9 @@ void DefaultCliDelegate::saveFile(Context* ctx, const CliOpenFile& cof)
     params.set("slice", cof.slice.c_str());
   }
 
+  if (cof.ignoreEmpty)
+    params.set("ignoreEmpty", "true");
+
   ctx->executeCommand(saveAsCommand, params);
 }
 
@@ -124,13 +128,13 @@ void DefaultCliDelegate::exportFiles(Context* ctx, DocExporter& exporter)
   LOG("APP: Export sprite sheet: Done\n");
 }
 
-void DefaultCliDelegate::execScript(const std::string& filename)
-{
 #ifdef ENABLE_SCRIPTING
-  script::StdoutEngineDelegate delegate;
-  AppScripting engine(&delegate);
-  engine.evalFile(filename);
-#endif
+void DefaultCliDelegate::execScript(const std::string& filename,
+                                    const Params& params)
+{
+  if (!App::instance()->scriptEngine()->evalFile(filename, params))
+    throw std::runtime_error("Error executing script");
 }
+#endif // ENABLE_SCRIPTING
 
 } // namespace app

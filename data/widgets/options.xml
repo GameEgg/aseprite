@@ -1,5 +1,6 @@
 <!-- Aseprite -->
-<!-- Copyright (C) 2001-2018 by David Capello -->
+<!-- Copyright (C) 2018  Igara Studio S.A. -->
+<!-- Copyright (C) 2001-2018  David Capello -->
 <gui>
   <window id="options" text="@.title">
   <vbox>
@@ -8,6 +9,7 @@
         <listbox id="section_listbox">
           <listitem text="@.section_general" value="section_general" />
           <listitem text="@.section_files" value="section_files" />
+          <listitem text="@.section_color" value="section_color" />
           <listitem text="@.section_alerts" value="section_alerts" />
           <listitem text="@.section_editor" value="section_editor" />
           <listitem text="@.section_selection" value="section_selection" />
@@ -114,6 +116,38 @@
           </grid>
         </vbox>
 
+        <!-- Color -->
+        <vbox id="section_color">
+          <separator text="@.section_color" horizontal="true" />
+          <check text="@.color_management" id="color_management" pref="color.manage" />
+
+	  <grid columns="2">
+            <label text="@.working_rgb_cs" id="working_rgb_cs_label" />
+            <combobox id="working_rgb_cs" />
+
+            <label text="@.files_with_cs" id="files_with_cs_label" />
+            <combobox id="files_with_cs">
+              <listitem text="@.disable_cs" />
+              <listitem text="@.use_embedded_cs" />
+              <listitem text="@.convert_cs" />
+              <listitem text="@.assign_cs" />
+              <listitem text="@.ask_cs" />
+	    </combobox>
+
+            <label text="@.missing_cs" id="missing_cs_label" />
+            <combobox id="missing_cs">
+              <listitem text="@.disable_cs" />
+              <listitem text="@.assign_cs" />
+              <listitem text="@.ask_cs" />
+	    </combobox>
+	  </grid>
+
+	  <hbox>
+	    <hbox expansive="true" />
+            <button id="reset_color_management" text="@general.reset" width="60" />
+	  </hbox>
+        </vbox>
+
         <!-- Editor -->
         <vbox id="section_editor">
           <separator text="@.section_editor" horizontal="true" />
@@ -142,6 +176,8 @@
           <check text="@.move_edges" id="move_edges" tooltip="@.move_edges_tooltip" />
           <check text="@.modifiers_disable_handles" id="modifiers_disable_handles" tooltip="@.modifiers_disable_handles_tooltip" />
           <check text="@.move_on_add_mode" id="move_on_add_mode" tooltip="@.move_on_add_mode_tooltip" />
+          <check text="@.select_tile_with_double_click" id="select_tile_with_double_click"
+		 pref="selection.doubleclick_select_tile" />
         </vbox>
 
         <!-- Timeline -->
@@ -188,7 +224,7 @@
             </combobox>
 
 	    <label text="@.cursor_color_type" />
-	    <combobox group="1" id="cursor_color_type">
+	    <combobox id="cursor_color_type">
 	      <listitem text="@.cursor_neg_bw" value="0" />
 	      <listitem text="@.cursor_specific_color" value="1" />
 	    </combobox>
@@ -207,6 +243,8 @@
             <label text="@.bg_size" />
 	    <hbox>
               <combobox id="checked_bg_size" />
+              <expr id="checked_bg_custom_w" />
+              <expr id="checked_bg_custom_h" />
               <check text="@.bg_apply_zoom" id="checked_bg_zoom" />
 	    </hbox>
 
@@ -219,7 +257,7 @@
 
 	  <hbox>
 	    <hbox expansive="true" />
-            <button id="reset_bg" text="@.reset_bg" width="60" />
+            <button id="reset_bg" text="@general.reset" width="60" />
 	  </hbox>
         </vbox>
 
@@ -269,7 +307,7 @@
 
 	  <hbox>
 	    <hbox expansive="true" />
-            <button id="reset_grid" text="@.reset_grid" width="60" />
+            <button id="reset_grid" text="@general.reset" width="60" />
 	  </hbox>
         </vbox>
 
@@ -305,6 +343,8 @@
                    tooltip="@.undo_goto_modified_tooltip" />
             <check id="undo_allow_nonlinear_history"
                    text="@.undo_allow_nonlinear_history" />
+            <check text="@.undo_show_tooltip" id="undo_show_tooltip"
+                   pref="undo.show_tooltip" />
           </vbox>
         </vbox>
 
@@ -323,8 +363,14 @@
                  pref="gif.show_alert" />
           <check id="jpeg_options_alert" text="@.jpeg_options_alert"
                  pref="jpeg.show_alert" />
+          <check id="svg_options_alert" text="@.svg_options_alert"
+                 pref="svg.show_alert" />
           <check id="advanced_mode_alert" text="@.advanced_mode_alert"
                  pref="advanced_mode.show_alert" />
+          <check id="invalid_fg_bg_color_alert" text="@.invalid_fg_bg_color_alert"
+                 pref="color_bar.show_invalid_fg_bg_color_alert" />
+          <check id="run_script_alert" text="@.run_script_alert"
+                 pref="scripts.show_run_script_alert" />
           <separator horizontal="true" />
 	  <hbox>
 	    <hbox expansive="true" />

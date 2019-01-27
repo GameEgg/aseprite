@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -104,12 +105,14 @@ namespace app {
     static FileOp* createSaveDocumentOperation(const Context* context,
                                                const FileOpROI& roi,
                                                const std::string& filename,
-                                               const std::string& filenameFormat);
+                                               const std::string& filenameFormat,
+                                               const bool ignoreEmptyFrames);
 
     ~FileOp();
 
     bool isSequence() const { return !m_seq.filename_list.empty(); }
     bool isOneFrame() const { return m_oneframe; }
+    bool preserveColorProfile() const { return m_preserveColorProfile; }
 
     const std::string& filename() const { return m_filename; }
     const base::paths& filenames() const { return m_seq.filename_list; }
@@ -167,6 +170,9 @@ namespace app {
 
     void getFilenameList(base::paths& output) const;
 
+    void setEmbeddedColorProfile() { m_embeddedColorProfile = true; }
+    bool hasEmbeddedColorProfile() const { return m_embeddedColorProfile; }
+
   private:
     FileOp();                   // Undefined
     FileOp(FileOpType type, Context* context);
@@ -191,6 +197,14 @@ namespace app {
     bool m_oneframe;            // Load just one frame (in formats
                                 // that support animation like
                                 // GIF/FLI/ASE).
+    bool m_ignoreEmpty;
+
+    // Return if we've to save/embed the color space of the document
+    // in the file.
+    bool m_preserveColorProfile;
+
+    // True if the file contained a color profile when it was loaded.
+    bool m_embeddedColorProfile;
 
     base::SharedPtr<FormatOptions> m_formatOptions;
 

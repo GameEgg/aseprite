@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -12,7 +13,6 @@
 #include "app/app_brushes.h"
 #endif
 
-#include "base/mutex.h"
 #include "base/paths.h"
 #include "doc/pixel_format.h"
 #include "obs/signal.h"
@@ -31,6 +31,13 @@ namespace ui {
 
 namespace app {
 
+#ifdef ENABLE_SCRIPTING
+  namespace script {
+    class Engine;
+  }
+#endif
+
+  class AppMod;
   class AppOptions;
   class BackupIndicator;
   class Context;
@@ -61,7 +68,7 @@ namespace app {
 
   class App {
   public:
-    App();
+    App(AppMod* mod = nullptr);
     ~App();
 
     static App* instance() { return m_instance; }
@@ -80,6 +87,7 @@ namespace app {
     void initialize(const AppOptions& options);
     void run();
 
+    AppMod* mod() const { return m_mod; }
     tools::ToolBox* toolBox() const;
     tools::Tool* activeTool() const;
     tools::ActiveToolManager* activeToolManager() const;
@@ -99,16 +107,20 @@ namespace app {
     }
 
     void showNotification(INotificationDelegate* del);
-    // This can be called from a non-UI thread.
     void showBackupNotification(bool state);
     void updateDisplayTitleBar();
 
     InputChain& inputChain();
 #endif
 
+#ifdef ENABLE_SCRIPTING
+    script::Engine* scriptEngine() { return m_engine.get(); }
+#endif
+
     // App Signals
     obs::signal<void()> Exit;
     obs::signal<void()> PaletteChange;
+    obs::signal<void()> ColorSpaceChange;
 
   private:
     class CoreModules;
@@ -117,6 +129,7 @@ namespace app {
 
     static App* m_instance;
 
+    AppMod* m_mod;
     std::unique_ptr<ui::UISystem> m_uiSystem;
     CoreModules* m_coreModules;
     Modules* m_modules;
@@ -128,10 +141,13 @@ namespace app {
 #ifdef ENABLE_UI
     std::unique_ptr<AppBrushes> m_brushes;
     BackupIndicator* m_backupIndicator;
-    base::mutex m_backupIndicatorMutex;
 #endif // ENABLE_UI
+#ifdef ENABLE_SCRIPTING
+    std::unique_ptr<script::Engine> m_engine;
+#endif
   };
 
+  void app_update_current_palette();
   void app_refresh_screen();
   void app_rebuild_documents_tabs();
   PixelFormat app_get_current_pixel_format();

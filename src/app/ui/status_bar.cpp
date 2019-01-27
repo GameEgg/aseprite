@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -40,8 +41,8 @@
 #include "doc/layer.h"
 #include "doc/sprite.h"
 #include "gfx/size.h"
-#include "she/font.h"
-#include "she/surface.h"
+#include "os/font.h"
+#include "os/surface.h"
 #include "ui/ui.h"
 
 #include <algorithm>
@@ -144,7 +145,7 @@ class StatusBar::Indicators : public HBox {
       gfx::Color textColor = theme->colors.statusBarText();
       Rect rc = clientBounds();
       Graphics* g = ev.graphics();
-      she::Surface* icon = m_part->bitmap(0);
+      os::Surface* icon = m_part->bitmap(0);
 
       g->fillRect(bgColor(), rc);
       if (m_colored)
@@ -424,20 +425,17 @@ private:
 class StatusBar::CustomizedTipWindow : public ui::TipWindow {
 public:
   CustomizedTipWindow(const std::string& text)
-    : ui::TipWindow(text)
-  {
+    : ui::TipWindow(text) {
   }
 
-  void setInterval(int msecs)
-  {
+  void setInterval(int msecs) {
     if (!m_timer)
       m_timer.reset(new ui::Timer(msecs, this));
     else
       m_timer->setInterval(msecs);
   }
 
-  void startTimer()
-  {
+  void startTimer() {
     m_timer->start();
   }
 
@@ -445,7 +443,8 @@ protected:
   bool onProcessMessage(Message* msg) override {
     switch (msg->type()) {
       case kTimerMessage:
-        closeWindow(NULL);
+        closeWindow(nullptr);
+        m_timer->stop();
         break;
     }
     return ui::TipWindow::onProcessMessage(msg);
@@ -539,7 +538,7 @@ public:
 
 StatusBar* StatusBar::m_instance = NULL;
 
-StatusBar::StatusBar()
+StatusBar::StatusBar(TooltipManager* tooltipManager)
   : m_timeout(0)
   , m_indicators(new Indicators)
   , m_docControls(new HBox)
@@ -582,9 +581,7 @@ StatusBar::StatusBar()
     m_commandsBox = box1;
   }
 
-  // Tooltips manager
-  TooltipManager* tooltipManager = new TooltipManager();
-  addChild(tooltipManager);
+  // Tooltips
   tooltipManager->addTooltipFor(m_currentFrame, "Current Frame", BOTTOM);
   tooltipManager->addTooltipFor(m_zoomEntry, "Zoom Level", BOTTOM);
   tooltipManager->addTooltipFor(m_newFrame, "New Frame", BOTTOM);
@@ -615,6 +612,28 @@ void StatusBar::onSelectedToolChange(tools::Tool* tool)
 void StatusBar::clearText()
 {
   setStatusText(1, "");
+}
+
+void StatusBar::showDefaultText()
+{
+  showDefaultText(current_editor ? current_editor->document(): nullptr);
+}
+
+void StatusBar::showDefaultText(Doc* doc)
+{
+  clearText();
+  if (doc){
+    std::string buf = base::string_printf("%s  :size: %d %d",
+                                          doc->name().c_str(),
+                                          doc->width(),
+                                          doc->height());
+    if (doc->getTransformation().bounds().w != 0) {
+      buf += base::string_printf(" :selsize: %d %d",
+                                 int(doc->getTransformation().bounds().w),
+                                 int(doc->getTransformation().bounds().h));
+    }
+    setStatusText(1, buf.c_str());
+  }
 }
 
 void StatusBar::updateFromEditor(Editor* editor)

@@ -33,7 +33,6 @@ namespace app {
 class ColorQuantizationCommand : public Command {
 public:
   ColorQuantizationCommand();
-  Command* clone() const override { return new ColorQuantizationCommand(*this); }
 
 protected:
   bool onEnabled(Context* context) override;
@@ -140,7 +139,7 @@ void ColorQuantizationCommand::onExecute(Context* context)
     }
 
     if (*curPalette != *newPalette)
-      job.transaction().execute(new cmd::SetPalette(sprite, frame, newPalette.get()));
+      job.tx()(new cmd::SetPalette(sprite, frame, newPalette.get()));
 
     set_current_palette(newPalette.get(), false);
     ui::Manager::getDefault()->invalidate();

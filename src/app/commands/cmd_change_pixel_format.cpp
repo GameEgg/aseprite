@@ -29,6 +29,7 @@
 #include "base/bind.h"
 #include "base/thread.h"
 #include "doc/image.h"
+#include "doc/layer.h"
 #include "doc/sprite.h"
 #include "fmt/format.h"
 #include "render/dithering_algorithm.h"
@@ -334,7 +335,6 @@ private:
 class ChangePixelFormatCommand : public Command {
 public:
   ChangePixelFormatCommand();
-  Command* clone() const override { return new ChangePixelFormatCommand(*this); }
 
 protected:
   void onLoadParams(const Params& params) override;
@@ -471,10 +471,14 @@ void ChangePixelFormatCommand::onExecute(Context* context)
       [this, &job, flatten] {
         Sprite* sprite(job.sprite());
 
-        if (flatten)
-          job.transaction().execute(new cmd::FlattenLayers(sprite));
+        if (flatten) {
+          SelectedLayers selLayers;
+          for (auto layer : sprite->root()->layers())
+            selLayers.insert(layer);
+          job.tx()(new cmd::FlattenLayers(sprite, selLayers));
+        }
 
-        job.transaction().execute(
+        job.tx()(
           new cmd::SetPixelFormat(
             sprite, m_format,
             m_ditheringAlgorithm,

@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2018  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -10,6 +11,8 @@
 
 #include "app/file/file.h"
 
+#include "app/cmd/convert_color_profile.h"
+#include "app/color_spaces.h"
 #include "app/console.h"
 #include "app/context.h"
 #include "app/doc.h"
@@ -23,6 +26,7 @@
 #include "app/modules/gui.h"
 #include "app/modules/palettes.h"
 #include "app/pref/preferences.h"
+#include "app/tx.h"
 #include "app/ui/optional_alert.h"
 #include "app/ui/status_bar.h"
 #include "base/fs.h"
@@ -35,8 +39,10 @@
 #include "fmt/format.h"
 #include "render/quantization.h"
 #include "render/render.h"
+#include "ui/alert.h"
 #include "ui/listitem.h"
 
+#include "ask_for_color_profile.xml.h"
 #include "open_sequence.xml.h"
 
 #include <cstring>
@@ -98,7 +104,8 @@ int save_document(Context* context, Doc* document)
     FileOp::createSaveDocumentOperation(
       context,
       FileOpROI(document, "", "", SelectedFrames(), false),
-      document->filename(), ""));
+      document->filename(), "",
+      false));
   if (!fop)
     return -1;
 
@@ -311,7 +318,8 @@ done:;
 FileOp* FileOp::createSaveDocumentOperation(const Context* context,
                                             const FileOpROI& roi,
                                             const std::string& filename,
-                                            const std::string& filenameFormatArg)
+                                            const std::string& filenameFormatArg,
+                                            const bool ignoreEmptyFrames)
 {
   std::unique_ptr<FileOp> fop(
     new FileOp(FileOpSave, const_cast<Context*>(context)));
@@ -319,6 +327,7 @@ FileOp* FileOp::createSaveDocumentOperation(const Context* context,
   // Document to save
   fop->m_document = const_cast<Doc*>(roi.document());
   fop->m_roi = roi;
+  fop->m_ignoreEmpty = ignoreEmptyFrames;
 
   // Get the extension of the filename (in lower case)
   LOG("FILE: Saving document \"%s\"\n", filename.c_str());
@@ -585,7 +594,7 @@ void FileOp::operate(IFileOpProgress* progress)
         }
 
         old_image = m_seq.image.get();
-        m_seq.image.reset(NULL);
+        m_seq.image.reset();
         m_seq.last_cel = NULL;
       };
 
@@ -738,31 +747,42 @@ void FileOp::operate(IFileOpProgress* progress)
           render.renderSprite(m_seq.image.get(), sprite, frame);
         }
 
-        // Setup the palette.
-        sprite->palette(frame)->copyColorsTo(m_seq.palette);
+        bool save = true;
 
-        // Setup the filename to be used.
-        m_filename = m_seq.filename_list[outputFrame];
-
-        // Make directories
-        {
-          std::string dir = base::get_file_path(m_filename);
-          try {
-            if (!base::is_directory(dir))
-              base::make_all_directories(dir);
-          }
-          catch (const std::exception& ex) {
-            // Ignore errors and make the delegate fail
-            setError("Error creating directory \"%s\"\n%s",
-                     dir.c_str(), ex.what());
-          }
+        // Check if we have to ignore empty frames
+        if (m_ignoreEmpty &&
+            !sprite->isOpaque() &&
+            doc::is_empty_image(m_seq.image.get())) {
+          save = false;
         }
 
-        // Call the "save" procedure... did it fail?
-        if (!m_format->save(this)) {
-          setError("Error saving frame %d in the file \"%s\"\n",
-                   outputFrame+1, m_filename.c_str());
-          break;
+        if (save) {
+          // Setup the palette.
+          sprite->palette(frame)->copyColorsTo(m_seq.palette);
+
+          // Setup the filename to be used.
+          m_filename = m_seq.filename_list[outputFrame];
+
+          // Make directories
+          {
+            std::string dir = base::get_file_path(m_filename);
+            try {
+              if (!base::is_directory(dir))
+                base::make_all_directories(dir);
+            }
+            catch (const std::exception& ex) {
+              // Ignore errors and make the delegate fail
+              setError("Error creating directory \"%s\"\n%s",
+                       dir.c_str(), ex.what());
+            }
+          }
+
+          // Call the "save" procedure... did it fail?
+          if (!m_format->save(this)) {
+            setError("Error saving frame %d in the file \"%s\"\n",
+                     outputFrame+1, m_filename.c_str());
+            break;
+          }
         }
 
         m_seq.progress_offset += m_seq.progress_fraction;
@@ -772,7 +792,7 @@ void FileOp::operate(IFileOpProgress* progress)
       m_filename = *m_seq.filename_list.begin();
 
       // Destroy the image
-      m_seq.image.reset(NULL);
+      m_seq.image.reset();
     }
     // Direct save to a file.
     else {
@@ -874,6 +894,91 @@ void FileOp::postLoad()
     }
   }
 
+  // What to do with the sprite color profile?
+  gfx::ColorSpacePtr spriteCS = sprite->colorSpace();
+  app::gen::ColorProfileBehavior behavior =
+    app::gen::ColorProfileBehavior::DISABLE;
+
+  if (Preferences::instance().color.manage()) {
+    // Embedded color profile
+    if (this->hasEmbeddedColorProfile()) {
+      behavior = Preferences::instance().color.filesWithProfile();
+      if (behavior == app::gen::ColorProfileBehavior::ASK) {
+#ifdef ENABLE_UI
+        if (m_context && m_context->isUIAvailable()) {
+          app::gen::AskForColorProfile window;
+          window.spriteWithoutProfile()->setVisible(false);
+          window.openWindowInForeground();
+          auto c = window.closer();
+          if (c == window.embedded())
+            behavior = app::gen::ColorProfileBehavior::EMBEDDED;
+          else if (c == window.convert())
+            behavior = app::gen::ColorProfileBehavior::CONVERT;
+          else if (c == window.assign())
+            behavior = app::gen::ColorProfileBehavior::ASSIGN;
+          else
+            behavior = app::gen::ColorProfileBehavior::DISABLE;
+        }
+        else
+#endif // ENABLE_UI
+        {
+          behavior = app::gen::ColorProfileBehavior::EMBEDDED;
+        }
+      }
+    }
+    // Missing color space
+    else {
+      behavior = Preferences::instance().color.missingProfile();
+      if (behavior == app::gen::ColorProfileBehavior::ASK) {
+#ifdef ENABLE_UI
+        if (m_context && m_context->isUIAvailable()) {
+          app::gen::AskForColorProfile window;
+          window.spriteWithProfile()->setVisible(false);
+          window.embedded()->setVisible(false);
+          window.convert()->setVisible(false);
+          window.openWindowInForeground();
+          if (window.closer() == window.assign()) {
+            behavior = app::gen::ColorProfileBehavior::ASSIGN;
+          }
+          else {
+            behavior = app::gen::ColorProfileBehavior::DISABLE;
+          }
+        }
+        else
+#endif // ENABLE_UI
+        {
+          behavior = app::gen::ColorProfileBehavior::ASSIGN;
+        }
+      }
+    }
+  }
+
+  switch (behavior) {
+
+    case app::gen::ColorProfileBehavior::DISABLE:
+      sprite->setColorSpace(gfx::ColorSpace::MakeNone());
+      break;
+
+    case app::gen::ColorProfileBehavior::EMBEDDED:
+      // Do nothing, just keep the current sprite's color sprite
+      break;
+
+    case app::gen::ColorProfileBehavior::CONVERT: {
+      // Convert to the working color profile
+      auto gfxCS = get_working_rgb_space_from_preferences();
+      if (!gfxCS->nearlyEqual(*spriteCS))
+        cmd::convert_color_profile(sprite, gfxCS);
+      break;
+    }
+
+    case app::gen::ColorProfileBehavior::ASSIGN: {
+      // Convert to the working color profile
+      auto gfxCS = get_working_rgb_space_from_preferences();
+      sprite->setColorSpace(gfxCS);
+      break;
+    }
+  }
+
   m_document->markAsSaved();
 }
 
@@ -943,7 +1048,7 @@ Image* FileOp::sequenceImage(PixelFormat pixelFormat, int w, int h)
 
   // Create the image
   if (!m_document) {
-    sprite = new Sprite(pixelFormat, w, h, 256);
+    sprite = new Sprite(ImageSpec((ColorMode)pixelFormat, w, h), 256);
     try {
       LayerImage* layer = new LayerImage(sprite);
 
@@ -1062,9 +1167,13 @@ FileOp::FileOp(FileOpType type, Context* context)
   , m_done(false)
   , m_stop(false)
   , m_oneframe(false)
+  , m_ignoreEmpty(false)
+  , m_preserveColorProfile(
+      Preferences::instance().color.manage())
+  , m_embeddedColorProfile(false)
 {
   m_seq.palette = nullptr;
-  m_seq.image.reset(nullptr);
+  m_seq.image.reset();
   m_seq.progress_offset = 0.0f;
   m_seq.progress_fraction = 0.0f;
   m_seq.frame = frame_t(0);

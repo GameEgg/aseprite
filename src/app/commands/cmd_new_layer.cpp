@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2001-2017  David Capello
+// Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
 // the End-User License Agreement for Aseprite.
@@ -16,9 +16,10 @@
 #include "app/context_access.h"
 #include "app/doc_api.h"
 #include "app/find_widget.h"
+#include "app/i18n/strings.h"
 #include "app/load_widget.h"
 #include "app/modules/gui.h"
-#include "app/transaction.h"
+#include "app/tx.h"
 #include "app/ui/main_window.h"
 #include "app/ui/status_bar.h"
 #include "app/ui_context.h"
@@ -42,15 +43,15 @@ using namespace ui;
 class NewLayerCommand : public Command {
 public:
   enum class Type { Layer, Group, ReferenceLayer };
-  enum class Place { AfterActiveLayer, Top };
+  enum class Place { AfterActiveLayer, BeforeActiveLayer, Top };
 
   NewLayerCommand();
-  Command* clone() const override { return new NewLayerCommand(*this); }
 
 protected:
   void onLoadParams(const Params& params) override;
   bool onEnabled(Context* context) override;
   void onExecute(Context* context) override;
+  std::string onGetFriendlyName() const override;
 
 private:
   std::string getUniqueLayerName(const Sprite* sprite) const;
@@ -87,6 +88,8 @@ void NewLayerCommand::onLoadParams(const Params& params)
   m_place = Place::AfterActiveLayer;
   if (params.get("top") == "true")
     m_place = Place::Top;
+  else if (params.get("before") == "true")
+    m_place = Place::BeforeActiveLayer;
 }
 
 bool NewLayerCommand::onEnabled(Context* context)
@@ -147,6 +150,7 @@ void NewLayerCommand::onExecute(Context* context)
       return;
   }
 
+#ifdef ENABLE_UI
   // If params specify to ask the user about the name...
   if (m_ask) {
     // We open the window to ask the name
@@ -159,6 +163,7 @@ void NewLayerCommand::onExecute(Context* context)
 
     name = window.name()->text();
   }
+#endif
 
   LayerGroup* parent = sprite->root();
   Layer* activeLayer = writer.layer();
@@ -175,17 +180,19 @@ void NewLayerCommand::onExecute(Context* context)
     }
   }
 
-  Layer* layer;
+  Layer* layer = nullptr;
   {
-    Transaction transaction(
+    Tx tx(
       writer.context(),
       std::string("New ") + layerPrefix());
-    DocApi api = document->getApi(transaction);
+    DocApi api = document->getApi(tx);
     bool afterBackground = false;
 
     switch (m_type) {
       case Type::Layer:
         layer = api.newLayer(parent, name);
+        if (m_place == Place::BeforeActiveLayer)
+          api.restackLayerBefore(layer, parent, activeLayer);
         break;
       case Type::Group:
         layer = api.newGroup(parent, name);
@@ -236,7 +243,7 @@ void NewLayerCommand::onExecute(Context* context)
 
       if (sameParents == selLayers.size()) {
         for (Layer* newChild : selLayers.toLayerList()) {
-          transaction.execute(
+          tx(
             new cmd::MoveLayer(newChild, layer,
                                static_cast<LayerGroup*>(layer)->lastLayer()));
         }
@@ -311,17 +318,44 @@ void NewLayerCommand::onExecute(Context* context)
       }
     }
 
-    transaction.commit();
+    tx.commit();
   }
-  update_screen_for_document(document);
 
-  StatusBar::instance()->invalidate();
-  StatusBar::instance()->showTip(
-    1000, "%s '%s' created",
-    layerPrefix(),
-    name.c_str());
+#ifdef ENABLE_UI
+  if (context->isUIAvailable()) {
+    update_screen_for_document(document);
 
-  App::instance()->mainWindow()->popTimeline();
+    StatusBar::instance()->invalidate();
+    StatusBar::instance()->showTip(
+      1000, "%s '%s' created",
+      layerPrefix(),
+      name.c_str());
+
+    App::instance()->mainWindow()->popTimeline();
+  }
+#endif
+}
+
+std::string NewLayerCommand::onGetFriendlyName() const
+{
+  std::string text;
+
+  switch (m_type) {
+    case Type::Layer:
+      if (m_place == Place::BeforeActiveLayer)
+        text = Strings::commands_NewLayer_BeforeActiveLayer();
+      else
+        text = Strings::commands_NewLayer();
+      break;
+    case Type::Group:
+      text = Strings::commands_NewLayer_Group();
+      break;
+    case Type::ReferenceLayer:
+      text = Strings::commands_NewLayer_ReferenceLayer();
+      break;
+  }
+
+  return text;
 }
 
 std::string NewLayerCommand::getUniqueLayerName(const Sprite* sprite) const
