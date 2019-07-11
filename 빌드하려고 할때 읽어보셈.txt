@@ -1,0 +1,15 @@
+set PATH=F:\Develop\SDK\depot_tools;%PATH%
+cd F:\Develop\SDK\depot_tools
+gclient sync
+
+set PATH=F:\Develop\SDK\llvm\bin;%PATH%
+gn gen out/Release --args="is_official_build=true skia_use_system_expat=false skia_use_system_libjpeg_turbo=false skia_use_system_libpng=false skia_use_system_libwebp=false skia_use_system_zlib=false target_cpu=""x64"" cc=""clang"" cxx=""clang++"" clang_win=""f:\Develop\SDK\llvm"""
+ninja -C out/Release skia
+
+call "C:\Program Files (x86)\Microsoft Visual Studio 14.0\Common7\Tools\VsDevCmd.bat" -arch=x64
+
+cd aseprite
+mkdir build
+cd build
+cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLAF_OS_BACKEND=skia -DSKIA_DIR=F:\Develop\SDK\skia -DSKIA_OUT_DIR=F:\Develop\SDK\skia\out\Release -G Ninja ..
+ninja aseprite

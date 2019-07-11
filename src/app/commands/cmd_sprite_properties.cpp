@@ -219,17 +219,11 @@ void SpritePropertiesCommand::onExecute(Context* context)
     double pivotY = window.pivotY()->textDouble();
 
     if (index != sprite->transparentColor() ||
-<<<<<<< HEAD
         pixelRatio != sprite->pixelRatio() ||
         pivotX != sprite->pivotX() ||
         pivotY != sprite->pivotY()) {
-      Transaction transaction(writer.context(), "Change Sprite Properties");
-      DocApi api = writer.document()->getApi(transaction);
-=======
-        pixelRatio != sprite->pixelRatio()) {
       Tx tx(writer.context(), "Change Sprite Properties");
       DocApi api = writer.document()->getApi(tx);
->>>>>>> 67e0da478da465dddaca90cb8e409da33f5ec45c
 
       if (index != sprite->transparentColor())
         api.setSpriteTransparentColor(sprite, index);
@@ -237,14 +231,10 @@ void SpritePropertiesCommand::onExecute(Context* context)
       if (pixelRatio != sprite->pixelRatio())
         tx(new cmd::SetPixelRatio(sprite, pixelRatio));
 
-<<<<<<< HEAD
       if (pivotX != sprite->pivotX() || pivotY != sprite->pivotY())
-        transaction.execute(new cmd::SetPivot(sprite, gfx::PointF(pivotX, pivotY)));
+        tx(new cmd::SetPivot(sprite, gfx::PointF(pivotX, pivotY)));
 
-      transaction.commit();
-=======
       tx.commit();
->>>>>>> 67e0da478da465dddaca90cb8e409da33f5ec45c
 
       update_screen_for_document(writer.document());
     }
