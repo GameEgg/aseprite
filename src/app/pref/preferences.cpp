@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -15,8 +15,10 @@
 #include "app/resource_finder.h"
 #include "app/tools/ink.h"
 #include "app/tools/tool.h"
+#include "base/fs.h"
 #include "doc/sprite.h"
 #include "os/system.h"
+#include "ui/system.h"
 
 namespace app {
 
@@ -25,6 +27,13 @@ static Preferences* singleton = nullptr;
 // static
 Preferences& Preferences::instance()
 {
+#ifdef _DEBUG
+  // Preferences can be used only from the main UI thread. In other
+  // case access to std::map<> could crash the program.
+  if (ui::UISystem::instance())
+    ui::assert_ui_thread();
+#endif
+
   ASSERT(singleton);
   return *singleton;
 }
@@ -35,21 +44,27 @@ Preferences::Preferences()
   ASSERT(!singleton);
   singleton = this;
 
+  // The first time we execute the program, the configuration file
+  // doesn't exist.
+  const bool firstTime = (!base::is_file(main_config_filename()));
+
   load();
 
   // Hide the menu bar depending on:
-  // 1. the native menu bar is available
-  // 2. this is the first run of the program
-  if (os::instance() &&
-      os::instance()->menus() &&
-      updater.uuid().empty()) {
+  // 1. this is the first run of the program
+  // 2. the native menu bar is available
+  if (firstTime &&
+      os::instance() &&
+      os::instance()->menus()) {
     general.showMenuBar(false);
   }
 }
 
 Preferences::~Preferences()
 {
-  save();
+  // Don't save preferences, this must be done by the client of the
+  // Preferences instance (the App class).
+  //save();
 
   for (auto& pair : m_tools)
     delete pair.second;
@@ -68,6 +83,7 @@ void Preferences::load()
 
 void Preferences::save()
 {
+  ui::assert_ui_thread();
   app::gen::GlobalPref::save();
 
   for (auto& pair : m_tools)
@@ -140,6 +156,22 @@ DocumentPreferences& Preferences::document(const Doc* doc)
   }
 }
 
+void Preferences::resetToolPreferences(tools::Tool* tool)
+{
+  auto it = m_tools.find(tool->getId());
+  if (it != m_tools.end())
+    m_tools.erase(it);
+
+  std::string section = std::string("tool.") + tool->getId();
+  del_config_section(section.c_str());
+
+  // TODO improve this, if we add new sections in pref.xml we have to
+  //      update this manually :(
+  del_config_section((section + ".brush").c_str());
+  del_config_section((section + ".spray").c_str());
+  del_config_section((section + ".floodfill").c_str());
+}
+
 void Preferences::removeDocument(Doc* doc)
 {
   ASSERT(doc);
@@ -202,7 +234,7 @@ void Preferences::serializeDocPref(const Doc* doc, app::DocumentPreferences* doc
   }
 
   if (doc) {
-    if (flush_config)
+    if (save && flush_config)
       flush_config_file();
 
     pop_config_state();

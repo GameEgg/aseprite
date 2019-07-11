@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -24,6 +25,7 @@
 #include "base/string.h"
 #include "doc/image.h"
 #include "doc/image_ref.h"
+#include "render/dithering.h"
 #include "render/ordered_dither.h"
 #include "render/quantization.h"
 #include "ui/system.h"
@@ -183,8 +185,7 @@ void PasteTextCommand::onExecute(Context* ctx)
         image.reset(
           render::convert_pixel_format(
             image.get(), NULL, sprite->pixelFormat(),
-            render::DitheringAlgorithm::None,
-            render::DitheringMatrix(),
+            render::Dithering(),
             rgbmap, sprite->palette(editor->frame()),
             false, 0));
       }

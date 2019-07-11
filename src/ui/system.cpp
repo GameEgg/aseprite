@@ -1,5 +1,5 @@
 // Aseprite UI Library
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -14,11 +14,12 @@
 #include "base/thread.h"
 #include "gfx/point.h"
 #include "os/display.h"
+#include "os/event.h"
+#include "os/event_queue.h"
 #include "os/surface.h"
 #include "os/system.h"
 #include "ui/clipboard_delegate.h"
 #include "ui/cursor.h"
-#include "ui/intern.h"
 #include "ui/intern.h"
 #include "ui/manager.h"
 #include "ui/message.h"
@@ -32,7 +33,7 @@ namespace ui {
 
 // This is used to check if calls to UI layer are made from the non-UI
 // thread. (Which might be catastrofic.)
-base::thread::native_handle_type main_gui_thread;
+base::thread::native_id_type main_gui_thread;
 
 // Current mouse cursor type.
 
@@ -188,7 +189,7 @@ UISystem::UISystem()
   ASSERT(!g_instance);
   g_instance = this;
 
-  main_gui_thread = base::this_thread::native_handle();
+  main_gui_thread = base::this_thread::native_id();
   mouse_cursor_type = kOutsideDisplay;
   support_native_custom_cursor =
     ((os::instance() &&
@@ -348,21 +349,18 @@ void set_mouse_position(const gfx::Point& newPos)
   _internal_set_mouse_position(newPos);
 }
 
-void execute_from_ui_thread(std::function<void()>&& f)
+void execute_from_ui_thread(std::function<void()>&& func)
 {
-  ASSERT(Manager::getDefault());
-
-  Manager* man = Manager::getDefault();
-  ASSERT(man);
-
-  FunctionMessage* msg = new FunctionMessage(std::move(f));
-  msg->setRecipient(man);
-  man->enqueueMessage(msg);
+  // Queue the event
+  os::Event ev;
+  ev.setType(os::Event::Callback);
+  ev.setCallback(std::move(func));
+  os::queue_event(ev);
 }
 
 bool is_ui_thread()
 {
-  return (main_gui_thread == base::this_thread::native_handle());
+  return (main_gui_thread == base::this_thread::native_id());
 }
 
 #ifdef _DEBUG

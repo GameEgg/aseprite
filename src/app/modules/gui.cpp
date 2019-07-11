@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -202,6 +202,8 @@ int init_module_gui()
   // Set graphics options for next time
   save_gui_config();
 
+  update_displays_color_profile_from_preferences();
+
   return 0;
 }
 
@@ -217,6 +219,44 @@ void exit_module_gui()
   delete gui_theme;
 
   main_display->dispose();
+}
+
+void update_displays_color_profile_from_preferences()
+{
+  auto system = os::instance();
+
+  gen::WindowColorProfile windowProfile;
+  if (Preferences::instance().color.manage())
+    windowProfile = Preferences::instance().color.windowProfile();
+  else
+    windowProfile = gen::WindowColorProfile::SRGB;
+
+  switch (windowProfile) {
+    case gen::WindowColorProfile::MONITOR:
+      system->setDisplaysColorSpace(nullptr);
+      break;
+    case gen::WindowColorProfile::SRGB:
+      system->setDisplaysColorSpace(
+        system->createColorSpace(gfx::ColorSpace::MakeSRGB()));
+      break;
+    case gen::WindowColorProfile::SPECIFIC: {
+      std::string name =
+        Preferences::instance().color.windowProfileName();
+
+      std::vector<os::ColorSpacePtr> colorSpaces;
+      system->listColorSpaces(colorSpaces);
+
+      for (auto& cs : colorSpaces) {
+        auto gfxCs = cs->gfxColorSpace();
+        if (gfxCs->type() == gfx::ColorSpace::ICC &&
+            gfxCs->name() == name) {
+          system->setDisplaysColorSpace(cs);
+          break;
+        }
+      }
+      break;
+    }
+  }
 }
 
 static void load_gui_config(int& w, int& h, bool& maximized,
@@ -462,7 +502,7 @@ bool CustomizedGuiManager::onProcessMessage(Message* msg)
               if (getForegroundWindow() == App::instance()->mainWindow()) {
                 // OK, so we can execute the command represented
                 // by the pressed-key in the message...
-                UIContext::instance()->executeCommand(
+                UIContext::instance()->executeCommandFromMenuOrShortcut(
                   command, key->params());
                 return true;
               }
@@ -567,10 +607,12 @@ bool CustomizedGuiManager::onProcessDevModeKeyDown(KeyMessage* msg)
       App::instance()->dataRecovery()->activeSession() &&
       current_editor &&
       current_editor->document()) {
-    App::instance()
+    Doc* doc = App::instance()
       ->dataRecovery()
       ->activeSession()
-      ->restoreBackupById(current_editor->document()->id());
+      ->restoreBackupById(current_editor->document()->id(), nullptr);
+    if (doc)
+      UIContext::instance()->documents().add(doc);
     return true;
   }
 #endif  // ENABLE_DATA_RECOVERY

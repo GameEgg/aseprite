@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -8,8 +9,11 @@
 #define APP_UI_CONTEXT_H_INCLUDED
 #pragma once
 
+#include "app/closed_docs.h"
 #include "app/context.h"
 #include "app/docs_observer.h"
+
+#include <vector>
 
 namespace app {
   class DocView;
@@ -41,14 +45,23 @@ namespace app {
     // new one if it's necessary.
     Editor* getEditorFor(Doc* document);
 
+    bool hasClosedDocs();
+    void reopenLastClosedDoc();
+    std::vector<Doc*> getAndRemoveAllClosedDocs();
+
   protected:
     void onAddDocument(Doc* doc) override;
     void onRemoveDocument(Doc* doc) override;
     void onGetActiveSite(Site* site) const override;
     void onSetActiveDocument(Doc* doc) override;
+    void onSetActiveLayer(doc::Layer* layer) override;
+    void onSetActiveFrame(const doc::frame_t frame) override;
+    void onCloseDocument(Doc* doc) override;
 
   private:
     DocView* m_lastSelectedView;
+    ClosedDocs m_closedDocs;
+
     static UIContext* m_instance;
   };
 

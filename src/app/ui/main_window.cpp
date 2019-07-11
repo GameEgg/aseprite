@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -14,6 +14,7 @@
 #include "app/app.h"
 #include "app/app_menus.h"
 #include "app/commands/commands.h"
+#include "app/crash/data_recovery.h"
 #include "app/i18n/strings.h"
 #include "app/ini_file.h"
 #include "app/modules/editors.h"
@@ -95,6 +96,16 @@ MainWindow::MainWindow()
 {
   m_tooltipManager = new TooltipManager();
   m_menuBar = new MainMenuBar();
+
+  // Register commands to load menus+shortcuts for these commands
+  Editor::registerCommands();
+
+  // Load all menus+keys for the first time
+  AppMenus::instance()->reload();
+
+  // Setup the main menubar
+  m_menuBar->setMenu(AppMenus::instance()->getRootMenu());
+
   m_notifications = new Notifications();
   m_contextBar = new ContextBar(m_tooltipManager);
   m_statusBar = new StatusBar(m_tooltipManager);
@@ -104,9 +115,10 @@ MainWindow::MainWindow()
   m_tabsBar = new WorkspaceTabs(this);
   m_workspace = new Workspace();
   m_previewEditor = new PreviewEditorWindow();
-  m_timeline = new Timeline(m_tooltipManager);
 
-  Editor::registerCommands();
+  // The timeline (AniControls) tooltips will use the keyboard
+  // shortcuts loaded above.
+  m_timeline = new Timeline(m_tooltipManager);
 
   m_workspace->setTabsBar(m_tabsBar);
   m_workspace->ActiveViewChanged.connect(&MainWindow::onActiveViewChange, this);
@@ -122,12 +134,6 @@ MainWindow::MainWindow()
   m_timeline->setExpansive(true);
   m_workspace->setExpansive(true);
   m_notifications->setVisible(false);
-
-  // Load all menus by first time.
-  AppMenus::instance()->reload();
-
-  // Setup the menus
-  m_menuBar->setMenu(AppMenus::instance()->getRootMenu());
 
   // Add the widgets in the boxes
   addChild(m_tooltipManager);
@@ -322,9 +328,9 @@ void MainWindow::popTimeline()
     setTimelineVisibility(true);
 }
 
-void MainWindow::showDataRecovery(crash::DataRecovery* dataRecovery)
+void MainWindow::dataRecoverySessionsAreReady()
 {
-  getHomeView()->showDataRecovery(dataRecovery);
+  getHomeView()->dataRecoverySessionsAreReady();
 }
 
 bool MainWindow::onProcessMessage(ui::Message* msg)
@@ -446,7 +452,7 @@ void MainWindow::onTabsContainerDoubleClicked(Tabs* tabs)
   Doc* oldDoc = UIContext::instance()->activeDocument();
 
   Command* command = Commands::instance()->byId(CommandId::NewFile());
-  UIContext::instance()->executeCommand(command);
+  UIContext::instance()->executeCommandFromMenuOrShortcut(command);
 
   Doc* newDoc = UIContext::instance()->activeDocument();
   if (newDoc != oldDoc) {
@@ -471,21 +477,15 @@ void MainWindow::onMouseOverTab(Tabs* tabs, TabView* tabView)
 {
   // Note: tabView can be NULL
   if (DocView* docView = dynamic_cast<DocView*>(tabView)) {
-    Doc* document = docView->document();
-
-    std::string name;
-    if (Preferences::instance().general.showFullPath())
-      name = document->filename();
-    else
-      name = base::get_file_name(document->filename());
-
-    m_statusBar->showDefaultText(document);
+    m_statusBar->showDefaultText(docView->document());
   }
-  else
+  else {
     m_statusBar->showDefaultText();
+  }
 }
 
-void MainWindow::onMouseLeaveTab() {
+void MainWindow::onMouseLeaveTab()
+{
   m_statusBar->showDefaultText();
 }
 

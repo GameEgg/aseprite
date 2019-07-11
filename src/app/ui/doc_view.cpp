@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -240,7 +240,7 @@ WorkspaceView* DocView::cloneWorkspaceView()
 
 void DocView::onWorkspaceViewSelected()
 {
-  // Do nothing
+  StatusBar::instance()->showDefaultText(m_document);
 }
 
 void DocView::onClonedFrom(WorkspaceView* from)
@@ -330,7 +330,9 @@ bool DocView::onCloseView(Workspace* workspace, bool quitting)
       ->setStatusText(0, "Sprite '%s' closed.",
                       m_document->name().c_str());
 
-    destroyer.destroyDocument();
+    // Just close the document (so we can reopen it with
+    // ReopenClosedFile command).
+    destroyer.closeDocument();
 
     // At this point the view is already destroyed
     return true;
@@ -550,7 +552,7 @@ bool DocView::onCopy(Context* ctx)
 bool DocView::onPaste(Context* ctx)
 {
   if (clipboard::get_current_format() == clipboard::ClipboardImage) {
-    clipboard::paste();
+    clipboard::paste(ctx, true);
     return true;
   }
   else
@@ -559,6 +561,16 @@ bool DocView::onPaste(Context* ctx)
 
 bool DocView::onClear(Context* ctx)
 {
+  // First we check if there is a selected slice, so we'll delete
+  // those slices.
+  Site site = ctx->activeSite();
+  if (!site.selectedSlices().empty()) {
+    Command* removeSlices = Commands::instance()->byId(CommandId::RemoveSlice());
+    ctx->executeCommand(removeSlices);
+    return true;
+  }
+
+  // In other case we delete the mask or the cel.
   ContextWriter writer(ctx);
   Doc* document = writer.document();
   bool visibleMask = document->isMaskVisible();
@@ -591,6 +603,9 @@ bool DocView::onClear(Context* ctx)
 
 void DocView::onCancel(Context* ctx)
 {
+  if (m_editor)
+    m_editor->cancelSelections();
+
   // Deselect mask
   if (ctx->checkFlags(ContextFlags::ActiveDocumentIsWritable |
                       ContextFlags::HasVisibleMask)) {

@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -7,6 +8,8 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
+
+#include "app/ui_context.h"
 
 #include "app/app.h"
 #include "app/doc.h"
@@ -23,9 +26,10 @@
 #include "app/ui/timeline/timeline.h"
 #include "app/ui/workspace.h"
 #include "app/ui/workspace_tabs.h"
-#include "app/ui_context.h"
 #include "base/mutex.h"
 #include "doc/sprite.h"
+
+#include <algorithm>
 
 namespace app {
 
@@ -141,6 +145,26 @@ void UIContext::onSetActiveDocument(Doc* document)
     notifyActiveSiteChanged();
 }
 
+void UIContext::onSetActiveLayer(doc::Layer* layer)
+{
+  if (DocView* docView = activeView()) {
+    if (Editor* editor = docView->editor())
+      editor->setLayer(layer);
+  }
+  else if (!isUIAvailable())
+    Context::onSetActiveLayer(layer);
+}
+
+void UIContext::onSetActiveFrame(const doc::frame_t frame)
+{
+  if (DocView* docView = activeView()) {
+    if (Editor* editor = docView->editor())
+      editor->setFrame(frame);
+  }
+  else if (!isUIAvailable())
+    Context::onSetActiveFrame(frame);
+}
+
 DocView* UIContext::getFirstDocView(Doc* document) const
 {
   Workspace* workspace = App::instance()->workspace();
@@ -160,17 +184,17 @@ DocView* UIContext::getFirstDocView(Doc* document) const
 
 DocViews UIContext::getAllDocViews(Doc* document) const
 {
-  Workspace* workspace = App::instance()->workspace();
   DocViews docViews;
-
-  for (WorkspaceView* view : *workspace) {
-    if (DocView* docView = dynamic_cast<DocView*>(view)) {
-      if (docView->document() == document) {
-        docViews.push_back(docView);
+  // The workspace can be nullptr when we are running in batch mode.
+  if (Workspace* workspace = App::instance()->workspace()) {
+    for (WorkspaceView* view : *workspace) {
+      if (DocView* docView = dynamic_cast<DocView*>(view)) {
+        if (docView->document() == document) {
+          docViews.push_back(docView);
+        }
       }
     }
   }
-
   return docViews;
 }
 
@@ -200,6 +224,24 @@ Editor* UIContext::activeEditor()
     return view->editor();
   else
     return NULL;
+}
+
+bool UIContext::hasClosedDocs()
+{
+  return m_closedDocs.hasClosedDocs();
+}
+
+void UIContext::reopenLastClosedDoc()
+{
+  if (Doc* doc = m_closedDocs.reopenLastClosedDoc()) {
+    // Put the document in the context again.
+    doc->setContext(this);
+  }
+}
+
+std::vector<Doc*> UIContext::getAndRemoveAllClosedDocs()
+{
+  return m_closedDocs.getAndRemoveAllClosedDocs();
 }
 
 void UIContext::onAddDocument(Doc* doc)
@@ -272,6 +314,14 @@ void UIContext::onGetActiveSite(Site* site) const
   else if (!isUIAvailable()) {
     return app::Context::onGetActiveSite(site);
   }
+}
+
+void UIContext::onCloseDocument(Doc* doc)
+{
+  ASSERT(doc != nullptr);
+  ASSERT(doc->context() == nullptr);
+
+  m_closedDocs.addClosedDoc(doc);
 }
 
 } // namespace app

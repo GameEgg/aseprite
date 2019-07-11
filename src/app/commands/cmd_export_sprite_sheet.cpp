@@ -46,9 +46,11 @@ using namespace ui;
 
 namespace {
 
+#ifdef ENABLE_UI
   // Special key value used in default preferences to know if by default
   // the user wants to generate texture and/or files.
   static const char* kSpecifiedFilename = "**filename**";
+#endif
 
   struct Fit {
     int width;
@@ -136,6 +138,7 @@ namespace {
       columns, rows, 0);
   }
 
+#ifdef ENABLE_UI
   bool ask_overwrite(bool askFilename, std::string filename,
                      bool askDataname, std::string dataname) {
     if ((askFilename &&
@@ -162,6 +165,7 @@ namespace {
     }
     return true;
   }
+#endif // ENABLE_UI
 
 }
 
@@ -181,6 +185,7 @@ struct ExportSpriteSheetParams : public NewParams {
   Param<int> shapePadding { this, 0, "shapePadding" };
   Param<int> innerPadding { this, 0, "innerPadding" };
   Param<bool> trim { this, false, "trim" };
+  Param<bool> trimByGrid { this, false, "trimByGrid" };
   Param<bool> extrude { this, false, "extrude" };
   Param<bool> openGenerated { this, false, "openGenerated" };
   Param<std::string> layer { this, std::string(), "layer" };
@@ -189,6 +194,8 @@ struct ExportSpriteSheetParams : public NewParams {
   Param<bool> listTags { this, true, "listTags" };
   Param<bool> listSlices { this, true, "listSlices" };
 };
+
+#if ENABLE_UI
 
 class ExportSpriteSheetWindow : public app::gen::ExportSpriteSheet {
 public:
@@ -221,6 +228,8 @@ public:
 
     openGenerated()->setSelected(params.openGenerated());
     trimEnabled()->setSelected(params.trim());
+    trimContainer()->setVisible(trimEnabled()->isSelected());
+    gridTrimEnabled()->setSelected(trimEnabled()->isSelected() && params.trimByGrid());
     extrudeEnabled()->setSelected(params.extrude());
 
     borderPadding()->setTextf("%d", params.borderPadding());
@@ -302,6 +311,7 @@ public:
     imageFilename()->Click.connect(base::Bind<void>(&ExportSpriteSheetWindow::onImageFilename, this));
     dataEnabled()->Click.connect(base::Bind<void>(&ExportSpriteSheetWindow::onDataEnabledChange, this));
     dataFilename()->Click.connect(base::Bind<void>(&ExportSpriteSheetWindow::onDataFilename, this));
+    trimEnabled()->Click.connect(base::Bind<void>(&ExportSpriteSheetWindow::onTrimEnabledChange, this));
     paddingEnabled()->Click.connect(base::Bind<void>(&ExportSpriteSheetWindow::onPaddingEnabledChange, this));
     frames()->Change.connect(base::Bind<void>(&ExportSpriteSheetWindow::onFramesChange, this));
     openGenerated()->Click.connect(base::Bind<void>(&ExportSpriteSheetWindow::onOpenGeneratedChange, this));
@@ -397,6 +407,10 @@ public:
     return trimEnabled()->isSelected();
   }
 
+  bool trimByGridValue() const {
+    return gridTrimEnabled()->isSelected();
+  }
+
   bool extrudeValue() const {
     return extrudeEnabled()->isSelected();
   }
@@ -471,8 +485,8 @@ private:
   }
 
   void onFileNamesChange() {
-    imageFilename()->setText("Select File: " + base::get_file_name(m_filename));
-    dataFilename()->setText("Select File: " + base::get_file_name(m_dataFilename));
+    imageFilename()->setText(base::get_file_name(m_filename));
+    dataFilename()->setText(base::get_file_name(m_dataFilename));
     resize();
   }
 
@@ -541,6 +555,12 @@ private:
     updateDataFields();
     updateExportButton();
     resize();
+  }
+
+  void onTrimEnabledChange() {
+      trimContainer()->setVisible(trimEnabled()->isSelected());
+      resize();
+      updateSizeFields();
   }
 
   void onPaddingEnabledChange() {
@@ -623,6 +643,8 @@ private:
   bool m_dataFilenameAskOverwrite;
 };
 
+#endif // ENABLE_UI
+
 class ExportSpriteSheetCommand : public CommandWithNewParams<ExportSpriteSheetParams> {
 public:
   ExportSpriteSheetCommand();
@@ -647,39 +669,51 @@ void ExportSpriteSheetCommand::onExecute(Context* context)
   Site site = context->activeSite();
   Doc* document = site.document();
   Sprite* sprite = site.sprite();
-  DocumentPreferences& docPref(Preferences::instance().document(document));
   auto& params = this->params();
 
 #ifdef ENABLE_UI
-  bool askOverwrite = params.askOverwrite();
-  // Show UI if the user specified it explicitly or the sprite sheet type wasn't specified.
-  if (context->isUIAvailable() && params.ui() &&
-      (params.ui.isSet() || !params.type.isSet())) {
-    // Copy document preferences to undefined params
-    if (docPref.spriteSheet.defined(true) &&
-        !params.type.isSet()) {
-      params.type(docPref.spriteSheet.type());
-      if (!params.columns.isSet())          params.columns(         docPref.spriteSheet.columns());
-      if (!params.rows.isSet())             params.rows(            docPref.spriteSheet.rows());
-      if (!params.width.isSet())            params.width(           docPref.spriteSheet.width());
-      if (!params.height.isSet())           params.height(          docPref.spriteSheet.height());
-      if (!params.bestFit.isSet())          params.bestFit(         docPref.spriteSheet.bestFit());
-      if (!params.textureFilename.isSet())  params.textureFilename( docPref.spriteSheet.textureFilename());
-      if (!params.dataFilename.isSet())     params.dataFilename(    docPref.spriteSheet.dataFilename());
-      if (!params.dataFormat.isSet())       params.dataFormat(      docPref.spriteSheet.dataFormat());
-      if (!params.borderPadding.isSet())    params.borderPadding(   docPref.spriteSheet.borderPadding());
-      if (!params.shapePadding.isSet())     params.shapePadding(    docPref.spriteSheet.shapePadding());
-      if (!params.innerPadding.isSet())     params.innerPadding(    docPref.spriteSheet.innerPadding());
-      if (!params.trim.isSet())             params.trim(            docPref.spriteSheet.trim());
-      if (!params.extrude.isSet())          params.extrude(         docPref.spriteSheet.extrude());
-      if (!params.openGenerated.isSet())    params.openGenerated(   docPref.spriteSheet.openGenerated());
-      if (!params.layer.isSet())            params.layer(           docPref.spriteSheet.layer());
-      if (!params.tag.isSet())              params.tag(             docPref.spriteSheet.frameTag());
-      if (!params.listLayers.isSet())       params.listLayers(      docPref.spriteSheet.listLayers());
-      if (!params.listTags.isSet())         params.listTags(        docPref.spriteSheet.listFrameTags());
-      if (!params.listSlices.isSet())       params.listSlices(      docPref.spriteSheet.listSlices());
-    }
+  // TODO if we use this line when !ENABLE_UI,
+  // Preferences::~Preferences() crashes on Linux when it wants to
+  // save the document preferences. It looks like
+  // Preferences::onRemoveDocument() is not called for some documents
+  // and when the Preferences::m_docs collection is iterated to save
+  // all DocumentPreferences, it accesses an invalid Doc* pointer (an
+  // already removed/deleted document).
+  DocumentPreferences& docPref(Preferences::instance().document(document));
 
+  // Show UI if the user specified it explicitly (params.ui=true) or
+  // the sprite sheet type wasn't specified.
+  const bool showUI = (context->isUIAvailable() && params.ui() &&
+                       (params.ui.isSet() || !params.type.isSet()));
+
+  // Copy document preferences to undefined params
+  if (docPref.spriteSheet.defined(true) &&
+      !params.type.isSet()) {
+    params.type(docPref.spriteSheet.type());
+    if (!params.columns.isSet())          params.columns(         docPref.spriteSheet.columns());
+    if (!params.rows.isSet())             params.rows(            docPref.spriteSheet.rows());
+    if (!params.width.isSet())            params.width(           docPref.spriteSheet.width());
+    if (!params.height.isSet())           params.height(          docPref.spriteSheet.height());
+    if (!params.bestFit.isSet())          params.bestFit(         docPref.spriteSheet.bestFit());
+    if (!params.textureFilename.isSet())  params.textureFilename( docPref.spriteSheet.textureFilename());
+    if (!params.dataFilename.isSet())     params.dataFilename(    docPref.spriteSheet.dataFilename());
+    if (!params.dataFormat.isSet())       params.dataFormat(      docPref.spriteSheet.dataFormat());
+    if (!params.borderPadding.isSet())    params.borderPadding(   docPref.spriteSheet.borderPadding());
+    if (!params.shapePadding.isSet())     params.shapePadding(    docPref.spriteSheet.shapePadding());
+    if (!params.innerPadding.isSet())     params.innerPadding(    docPref.spriteSheet.innerPadding());
+    if (!params.trim.isSet())             params.trim(            docPref.spriteSheet.trim());
+    if (!params.trimByGrid.isSet())       params.trimByGrid(      docPref.spriteSheet.trimByGrid());
+    if (!params.extrude.isSet())          params.extrude(         docPref.spriteSheet.extrude());
+    if (!params.openGenerated.isSet())    params.openGenerated(   docPref.spriteSheet.openGenerated());
+    if (!params.layer.isSet())            params.layer(           docPref.spriteSheet.layer());
+    if (!params.tag.isSet())              params.tag(             docPref.spriteSheet.frameTag());
+    if (!params.listLayers.isSet())       params.listLayers(      docPref.spriteSheet.listLayers());
+    if (!params.listTags.isSet())         params.listTags(        docPref.spriteSheet.listFrameTags());
+    if (!params.listSlices.isSet())       params.listSlices(      docPref.spriteSheet.listSlices());
+  }
+
+  bool askOverwrite = params.askOverwrite();
+  if (showUI) {
     ExportSpriteSheetWindow window(site, params);
     window.openWindowInForeground();
     if (!window.ok())
@@ -699,6 +733,7 @@ void ExportSpriteSheetCommand::onExecute(Context* context)
     docPref.spriteSheet.shapePadding    (params.shapePadding    (window.shapePaddingValue()));
     docPref.spriteSheet.innerPadding    (params.innerPadding    (window.innerPaddingValue()));
     docPref.spriteSheet.trim            (params.trim            (window.trimValue()));
+    docPref.spriteSheet.trimByGrid      (params.trimByGrid      (window.trimByGridValue()));
     docPref.spriteSheet.extrude         (params.extrude         (window.extrudeValue()));
     docPref.spriteSheet.openGenerated   (params.openGenerated   (window.openGeneratedValue()));
     docPref.spriteSheet.layer           (params.layer           (window.layerValue()));
@@ -736,6 +771,7 @@ void ExportSpriteSheetCommand::onExecute(Context* context)
   const int shapePadding = base::clamp(params.shapePadding(), 0, 100);
   const int innerPadding = base::clamp(params.innerPadding(), 0, 100);
   const bool trimCels = params.trim();
+  const bool trimByGrid = params.trimByGrid();
   const bool extrude = params.extrude();
   const int extrudePadding = (extrude ? 1: 0);
   const bool listLayers = params.listLayers();
@@ -822,6 +858,7 @@ void ExportSpriteSheetCommand::onExecute(Context* context)
   exporter.setShapePadding(shapePadding);
   exporter.setInnerPadding(innerPadding);
   exporter.setTrimCels(trimCels);
+  exporter.setTrimByGrid(trimByGrid);
   exporter.setExtrude(extrude);
   if (listLayers) exporter.setListLayers(true);
   if (listTags) exporter.setListFrameTags(true);
@@ -839,11 +876,8 @@ void ExportSpriteSheetCommand::onExecute(Context* context)
     StatusBar* statusbar = StatusBar::instance();
     if (statusbar)
       statusbar->showTip(1000, "Sprite Sheet Generated");
-  }
-#endif
 
-  // Copy background and grid preferences
-  {
+    // Copy background and grid preferences
     DocumentPreferences& newDocPref(
       Preferences::instance().document(newDocument.get()));
     newDocPref.bg = docPref.bg;
@@ -851,6 +885,7 @@ void ExportSpriteSheetCommand::onExecute(Context* context)
     newDocPref.pixelGrid = docPref.pixelGrid;
     Preferences::instance().removeDocument(newDocument.get());
   }
+#endif
 
   if (params.openGenerated()) {
     // Setup a filename for the new document in case that user didn't

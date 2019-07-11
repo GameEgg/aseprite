@@ -70,7 +70,9 @@ void UndoCommand::onExecute(Context* context)
 #ifdef ENABLE_UI
   Sprite* sprite = document->sprite();
   SpritePosition spritePosition;
-  const bool gotoModified = Preferences::instance().undo.gotoModified();
+  const bool gotoModified =
+    (Preferences::instance().undo.gotoModified() &&
+     context->isUIAvailable() && current_editor);
   if (gotoModified) {
     SpritePosition currentPosition(writer.site()->layer(),
                                    writer.site()->frame());
@@ -130,9 +132,10 @@ void UndoCommand::onExecute(Context* context)
   // (because new frames/layers could be added, positions that we
   // weren't able to reach before the undo).
   if (gotoModified) {
+    Site newSite = context->activeSite();
     SpritePosition currentPosition(
-      writer.site()->layer(),
-      writer.site()->frame());
+      newSite.layer(),
+      newSite.frame());
 
     if (spritePosition != currentPosition) {
       Layer* selectLayer = spritePosition.layer();

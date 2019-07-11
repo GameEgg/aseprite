@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2017  David Capello
 //
 // This program is distributed under the terms of
@@ -73,6 +73,7 @@ public:
   const Option& shapePadding() const { return m_shapePadding; }
   const Option& innerPadding() const { return m_innerPadding; }
   const Option& trim() const { return m_trim; }
+  const Option& trimByGrid() const { return m_trimByGrid; }
   const Option& crop() const { return m_crop; }
   const Option& slice() const { return m_slice; }
   const Option& filenameFormat() const { return m_filenameFormat; }
@@ -132,6 +133,7 @@ private:
   Option& m_shapePadding;
   Option& m_innerPadding;
   Option& m_trim;
+  Option& m_trimByGrid;
   Option& m_crop;
   Option& m_slice;
   Option& m_filenameFormat;

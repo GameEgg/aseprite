@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -13,6 +13,7 @@
 
 #include "app/app.h"
 #include "app/app_menus.h"
+#include "app/cmd_transaction.h"
 #include "app/color_utils.h"
 #include "app/commands/command.h"
 #include "app/commands/commands.h"
@@ -43,6 +44,7 @@
 #include "app/util/layer_boundaries.h"
 #include "app/util/readable_time.h"
 #include "base/bind.h"
+#include "base/clamp.h"
 #include "base/convert_to.h"
 #include "base/memory.h"
 #include "base/scoped_value.h"
@@ -1596,7 +1598,10 @@ void Timeline::onPaint(ui::PaintEvent& ev)
       data.begin = layerImagePtr->getCelBegin();
       data.end = layerImagePtr->getCelEnd();
       data.it = layerImagePtr->findFirstCelIteratorAfter(firstFrame-1);
-      data.prevIt = data.end;
+      if (firstFrame > 0 && data.it != data.begin)
+        data.prevIt = data.it-1;
+      else
+        data.prevIt = data.end;
       data.nextIt = (data.it != data.end ? data.it+1: data.end);
 
       // Calculate link range for the active cel
@@ -1721,7 +1726,8 @@ void Timeline::onAddLayer(DocEvent& ev)
   invalidate();
 }
 
-void Timeline::onAfterRemoveLayer(DocEvent& ev)
+// TODO similar to ActiveSiteHandler::onBeforeRemoveLayer()
+void Timeline::onBeforeRemoveLayer(DocEvent& ev)
 {
   Sprite* sprite = ev.sprite();
   Layer* layer = ev.layer();
@@ -1742,7 +1748,12 @@ void Timeline::onAfterRemoveLayer(DocEvent& ev)
 
     setLayer(layer_select);
   }
+}
 
+// We have to regenerate the layer rows (m_rows) after the layer is
+// removed from the sprite.
+void Timeline::onAfterRemoveLayer(DocEvent& ev)
+{
   regenerateRows();
   showCurrentCel();
   clearClipboardRange();
@@ -1758,6 +1769,7 @@ void Timeline::onAddFrame(DocEvent& ev)
   invalidate();
 }
 
+// TODO similar to ActiveSiteHandler::onRemoveFrame()
 void Timeline::onRemoveFrame(DocEvent& ev)
 {
   // Adjust current frame of all editors that are in a frame more
@@ -1781,7 +1793,7 @@ void Timeline::onRemoveFrame(DocEvent& ev)
   invalidate();
 }
 
-void Timeline::onSelectionChanged(DocEvent& ev)
+void Timeline::onSelectionBoundariesChanged(DocEvent& ev)
 {
   if (m_rangeLocks == 0)
     clearAndInvalidateRange();
@@ -2083,7 +2095,9 @@ void Timeline::drawLayer(ui::Graphics* g, int layerIdx)
   doc::color_t layerColor = layer->userData().color();
   gfx::Rect textBounds = bounds;
   if (m_rows[layerIdx].level() > 0) {
-    int w = m_rows[layerIdx].level()*frameBoxWidth();
+    const int frameBoxWithWithoutZoom =
+      skinTheme()->dimensions.timelineBaseSize();
+    const int w = m_rows[layerIdx].level()*frameBoxWithWithoutZoom;
     textBounds.x += w;
     textBounds.w -= w;
   }
@@ -2232,10 +2246,14 @@ void Timeline::drawCel(ui::Graphics* g, layer_t layerIndex, frame_t frame, Cel* 
         skinTheme()->calcBorder(this, style));
 
     if (!thumb_bounds.isEmpty()) {
-      os::Surface* thumb_surf = thumb::get_cel_thumbnail(cel, thumb_bounds.size());
-      if (thumb_surf) {
-        g->drawRgbaSurface(thumb_surf, thumb_bounds.x, thumb_bounds.y);
-        thumb_surf->dispose();
+      if (os::Surface* surface = thumb::get_cel_thumbnail(cel, thumb_bounds.size())) {
+        const int t = base::clamp(thumb_bounds.w/8, 4, 16);
+        draw_checked_grid(g, thumb_bounds, gfx::Size(t, t), docPref());
+
+        g->drawRgbaSurface(surface,
+                           thumb_bounds.center().x-surface->width()/2,
+                           thumb_bounds.center().y-surface->height()/2);
+        surface->dispose();
       }
     }
   }
@@ -2247,7 +2265,7 @@ void Timeline::drawCel(ui::Graphics* g, layer_t layerIndex, frame_t frame, Cel* 
 
 void Timeline::updateCelOverlayBounds(const Hit& hit)
 {
-  gfx::Rect inner, outer;
+  gfx::Rect rc;
 
   if (docPref().thumbnails.overlayEnabled() && hit.part == PART_CEL) {
     m_thumbnailsOverlayHit = hit;
@@ -2267,88 +2285,66 @@ void Timeline::updateCelOverlayBounds(const Hit& hit)
     gfx::Point center = client_bounds.center();
 
     gfx::Rect bounds_cel = getPartBounds(m_thumbnailsOverlayHit);
-    inner = gfx::Rect(
+    rc = gfx::Rect(
       bounds_cel.x + m_thumbnailsOverlayDirection.x,
       bounds_cel.y + m_thumbnailsOverlayDirection.y,
       width,
-      height
-    );
+      height);
 
-    if (!client_bounds.contains(inner)) {
+    if (!client_bounds.contains(rc)) {
       m_thumbnailsOverlayDirection = gfx::Point(
         bounds_cel.x < center.x ? (int)(frameBoxWidth()*1.0) : -width,
-        bounds_cel.y < center.y ? (int)(frameBoxWidth()*0.5) : -height+(int)(frameBoxWidth()*0.5)
-      );
-      inner.setOrigin(gfx::Point(
+        bounds_cel.y < center.y ? (int)(frameBoxWidth()*0.5) : -height+(int)(frameBoxWidth()*0.5));
+      rc.setOrigin(gfx::Point(
         bounds_cel.x + m_thumbnailsOverlayDirection.x,
-        bounds_cel.y + m_thumbnailsOverlayDirection.y
-      ));
+        bounds_cel.y + m_thumbnailsOverlayDirection.y));
     }
-
-    outer = gfx::Rect(inner).enlarge(1);
   }
   else {
-    outer = gfx::Rect(0, 0, 0, 0);
+    rc = gfx::Rect(0, 0, 0, 0);
   }
 
-  if (outer != m_thumbnailsOverlayOuter) {
-    if (!m_thumbnailsOverlayOuter.isEmpty()) {
-      invalidateRect(gfx::Rect(m_thumbnailsOverlayOuter).offset(origin()));
-    }
-    if (!outer.isEmpty()) {
-      invalidateRect(gfx::Rect(outer).offset(origin()));
-    }
-    m_thumbnailsOverlayVisible = !outer.isEmpty();
-    m_thumbnailsOverlayOuter = outer;
-    m_thumbnailsOverlayInner = inner;
-  }
+  if (rc == m_thumbnailsOverlayBounds)
+    return;
+
+  if (!m_thumbnailsOverlayBounds.isEmpty())
+    invalidateRect(gfx::Rect(m_thumbnailsOverlayBounds).offset(origin()));
+  if (!rc.isEmpty())
+    invalidateRect(gfx::Rect(rc).offset(origin()));
+
+  m_thumbnailsOverlayVisible = !rc.isEmpty();
+  m_thumbnailsOverlayBounds = rc;
 }
 
 void Timeline::drawCelOverlay(ui::Graphics* g)
 {
-  if (!m_thumbnailsOverlayVisible) {
+  if (!m_thumbnailsOverlayVisible)
     return;
-  }
 
   Layer* layer = m_rows[m_thumbnailsOverlayHit.layer].layer();
   Cel* cel = layer->cel(m_thumbnailsOverlayHit.frame);
-  if (!cel) {
+  if (!cel)
     return;
-  }
-  Image* image = cel->image();
-  if (!image) {
-    return;
-  }
 
-  IntersectClip clip(g, m_thumbnailsOverlayOuter);
+  Image* image = cel->image();
+  if (!image)
+    return;
+
+  IntersectClip clip(g, m_thumbnailsOverlayBounds);
   if (!clip)
     return;
 
-  double scale = (
-    m_sprite->width() > m_sprite->height() ?
-    m_thumbnailsOverlayInner.w / (double)m_sprite->width() :
-    m_thumbnailsOverlayInner.h / (double)m_sprite->height()
-  );
+  gfx::Rect rc = m_sprite->bounds().fitIn(
+    gfx::Rect(m_thumbnailsOverlayBounds).shrink(1));
+  if (os::Surface* surface = thumb::get_cel_thumbnail(cel, rc.size())) {
+    draw_checked_grid(g, rc, gfx::Size(8, 8)*ui::guiscale(), docPref());
 
-  gfx::Size overlay_size(
-    m_thumbnailsOverlayInner.w,
-    m_thumbnailsOverlayInner.h
-  );
-
-  gfx::Rect cel_image_on_overlay(
-    (int)(cel->x() * scale),
-    (int)(cel->y() * scale),
-    (int)(image->width() * scale),
-    (int)(image->height() * scale)
-  );
-
-  os::Surface* overlay_surf = thumb::get_cel_thumbnail(cel, overlay_size, cel_image_on_overlay);
-
-  g->drawRgbaSurface(overlay_surf,
-    m_thumbnailsOverlayInner.x, m_thumbnailsOverlayInner.y);
-  g->drawRect(gfx::rgba(0,0,0,255), m_thumbnailsOverlayOuter);
-
-  overlay_surf->dispose();
+    g->drawRgbaSurface(surface,
+                       rc.center().x-surface->width()/2,
+                       rc.center().y-surface->height()/2);
+    g->drawRect(gfx::rgba(0, 0, 0, 128), m_thumbnailsOverlayBounds);
+    surface->dispose();
+  }
 }
 
 void Timeline::drawCelLinkDecorators(ui::Graphics* g, const gfx::Rect& bounds,
@@ -3722,6 +3718,12 @@ void Timeline::dropRange(DropOp op)
         !m_sprite->frameTags().empty()) {
       invalidateRect(getFrameHeadersBounds().offset(origin()));
     }
+
+    // Update the sprite position after the command was executed
+    // TODO improve this workaround
+    Cmd* cmd = m_document->undoHistory()->lastExecutedCmd();
+    if (auto cmdTx = dynamic_cast<CmdTransaction*>(cmd))
+      cmdTx->updateSpritePositionAfter();
   }
   catch (const std::exception& ex) {
     Console::showException(ex);
@@ -4017,7 +4019,7 @@ bool Timeline::onCopy(Context* ctx)
 bool Timeline::onPaste(Context* ctx)
 {
   if (clipboard::get_current_format() == clipboard::ClipboardDocRange) {
-    clipboard::paste();
+    clipboard::paste(ctx, true);
     return true;
   }
   else

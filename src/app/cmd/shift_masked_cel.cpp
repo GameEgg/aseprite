@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -40,20 +41,28 @@ void ShiftMaskedCel::onUndo()
 void ShiftMaskedCel::shift(int dx, int dy)
 {
   Cel* cel = this->cel();
-  Image* image = cel->image();
   Mask* mask = static_cast<Doc*>(cel->document())->mask();
   ASSERT(mask->bitmap());
   if (!mask->bitmap())
     return;
 
-  int x = cel->x();
-  int y = cel->y();
+  gfx::Rect newBounds;
+  ImageRef newImage =
+    doc::algorithm::shift_image_with_mask(cel, mask, dx, dy, newBounds);
 
-  mask->offsetOrigin(-x, -y);
-  doc::algorithm::shift_image_with_mask(image, mask, dx, dy);
-  mask->offsetOrigin(x, y);
+  ImageRef oldImage = cel->imageRef();
+  if (!is_same_image(oldImage.get(), newImage.get())) {
+    ObjectId id = oldImage->id();
+    ObjectVersion ver = oldImage->version();
+    oldImage->setId(NullId);
 
-  image->incrementVersion();
+    newImage->setId(id);
+    newImage->setVersion(ver);
+    newImage->incrementVersion();
+    cel->data()->setImage(newImage);
+  }
+  cel->data()->setBounds(newBounds);
+  cel->data()->incrementVersion();
 }
 
 } // namespace cmd

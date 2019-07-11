@@ -1,5 +1,5 @@
 // Aseprite UI Library
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -78,7 +78,7 @@ Manager* Manager::m_defaultManager = NULL;
 gfx::Region Manager::m_dirtyRegion;
 
 #ifdef DEBUG_UI_THREADS
-static base::thread::native_handle_type manager_thread = 0;
+static base::thread::native_id_type manager_thread = 0;
 #endif
 
 static WidgetsList mouse_widgets_list; // List of widgets to send mouse events
@@ -168,7 +168,7 @@ Manager::Manager()
 {
 #ifdef DEBUG_UI_THREADS
   ASSERT(!manager_thread);
-  manager_thread = base::this_thread::native_handle();
+  manager_thread = base::this_thread::native_id();
 #endif
 
   if (!m_defaultManager) {
@@ -195,7 +195,7 @@ Manager::Manager()
 Manager::~Manager()
 {
 #ifdef DEBUG_UI_THREADS
-  ASSERT(manager_thread == base::this_thread::native_handle());
+  ASSERT(manager_thread == base::this_thread::native_id());
 #endif
 
   // There are some messages in queue? Dispatch everything.
@@ -264,21 +264,23 @@ void Manager::flipDisplay()
   // Draw overlays.
   overlays->drawOverlays();
 
-  // Flip dirty region.
-  {
-    m_dirtyRegion.createIntersection(
-      m_dirtyRegion,
-      gfx::Region(gfx::Rect(0, 0, ui::display_w(), ui::display_h())));
+  // Invalidate the dirty region in the laf::os::Display (the real OS window).
+  m_dirtyRegion.createIntersection(
+    m_dirtyRegion,
+    gfx::Region(gfx::Rect(0, 0, ui::display_w(), ui::display_h())));
 
-    for (const auto& rc : m_dirtyRegion)
-      m_display->flip(rc);
-
+  if (!m_dirtyRegion.isEmpty()) {
+    m_display->invalidateRegion(m_dirtyRegion);
     m_dirtyRegion.clear();
   }
 }
 
 bool Manager::generateMessages()
 {
+#ifdef DEBUG_UI_THREADS
+  ASSERT(manager_thread == base::this_thread::native_id());
+#endif
+
   // First check: there are windows to manage?
   if (children().empty())
     return false;
@@ -325,9 +327,9 @@ void Manager::generateSetCursorMessage(const gfx::Point& mousePos,
     set_mouse_cursor(kArrowCursor);
 }
 
-static MouseButtons mouse_buttons_from_os_to_ui(const os::Event& sheEvent)
+static MouseButtons mouse_buttons_from_os_to_ui(const os::Event& osEvent)
 {
-  switch (sheEvent.button()) {
+  switch (osEvent.button()) {
     case os::Event::LeftButton:   return kButtonLeft; break;
     case os::Event::RightButton:  return kButtonRight; break;
     case os::Event::MiddleButton: return kButtonMiddle; break;
@@ -339,10 +341,14 @@ static MouseButtons mouse_buttons_from_os_to_ui(const os::Event& sheEvent)
 
 void Manager::generateMessagesFromOSEvents()
 {
+#ifdef DEBUG_UI_THREADS
+  ASSERT(manager_thread == base::this_thread::native_id());
+#endif
+
   os::Event lastMouseMoveEvent;
 
-  // Events from "she" layer.
-  os::Event sheEvent;
+  // Events from laf-os
+  os::Event osEvent;
   for (;;) {
     // TODO Add timers to laf::os library so we can wait for then in
     //      the OS message loop.
@@ -364,11 +370,11 @@ void Manager::generateMessagesFromOSEvents()
     }
 #endif
 
-    m_eventQueue->getEvent(sheEvent, canWait);
-    if (sheEvent.type() == os::Event::None)
+    m_eventQueue->getEvent(osEvent, canWait);
+    if (osEvent.type() == os::Event::None)
       break;
 
-    switch (sheEvent.type()) {
+    switch (osEvent.type()) {
 
       case os::Event::CloseDisplay: {
         Message* msg = new Message(kCloseDisplayMessage);
@@ -387,7 +393,7 @@ void Manager::generateMessagesFromOSEvents()
       }
 
       case os::Event::DropFiles: {
-        Message* msg = new DropFilesMessage(sheEvent.files());
+        Message* msg = new DropFilesMessage(osEvent.files());
         msg->setRecipient(this);
         enqueueMessage(msg);
         break;
@@ -396,15 +402,15 @@ void Manager::generateMessagesFromOSEvents()
       case os::Event::KeyDown:
       case os::Event::KeyUp: {
         Message* msg = new KeyMessage(
-          (sheEvent.type() == os::Event::KeyDown ?
+          (osEvent.type() == os::Event::KeyDown ?
              kKeyDownMessage:
              kKeyUpMessage),
-          sheEvent.scancode(),
-          sheEvent.modifiers(),
-          sheEvent.unicodeChar(),
-          sheEvent.repeat());
+          osEvent.scancode(),
+          osEvent.modifiers(),
+          osEvent.unicodeChar(),
+          osEvent.repeat());
 
-        if (sheEvent.isDeadKey())
+        if (osEvent.isDeadKey())
           static_cast<KeyMessage*>(msg)->setDeadKey(true);
 
         broadcastKeyMsg(msg);
@@ -413,9 +419,9 @@ void Manager::generateMessagesFromOSEvents()
       }
 
       case os::Event::MouseEnter: {
-        _internal_set_mouse_position(sheEvent.position());
+        _internal_set_mouse_position(osEvent.position());
         set_mouse_cursor(kArrowCursor);
-        lastMouseMoveEvent = sheEvent;
+        lastMouseMoveEvent = osEvent;
         break;
       }
 
@@ -432,67 +438,73 @@ void Manager::generateMessagesFromOSEvents()
       }
 
       case os::Event::MouseMove: {
-        _internal_set_mouse_position(sheEvent.position());
+        _internal_set_mouse_position(osEvent.position());
         handleMouseMove(
-          sheEvent.position(),
+          osEvent.position(),
           m_mouseButtons,
-          sheEvent.modifiers(),
-          sheEvent.pointerType());
-        lastMouseMoveEvent = sheEvent;
+          osEvent.modifiers(),
+          osEvent.pointerType());
+        lastMouseMoveEvent = osEvent;
         break;
       }
 
       case os::Event::MouseDown: {
-        MouseButtons pressedButton = mouse_buttons_from_os_to_ui(sheEvent);
+        MouseButtons pressedButton = mouse_buttons_from_os_to_ui(osEvent);
         m_mouseButtons = (MouseButtons)((int)m_mouseButtons | (int)pressedButton);
         _internal_set_mouse_buttons(m_mouseButtons);
 
         handleMouseDown(
-          sheEvent.position(),
+          osEvent.position(),
           pressedButton,
-          sheEvent.modifiers(),
-          sheEvent.pointerType());
+          osEvent.modifiers(),
+          osEvent.pointerType());
         break;
       }
 
       case os::Event::MouseUp: {
-        MouseButtons releasedButton = mouse_buttons_from_os_to_ui(sheEvent);
+        MouseButtons releasedButton = mouse_buttons_from_os_to_ui(osEvent);
         m_mouseButtons = (MouseButtons)((int)m_mouseButtons & ~(int)releasedButton);
         _internal_set_mouse_buttons(m_mouseButtons);
 
         handleMouseUp(
-          sheEvent.position(),
+          osEvent.position(),
           releasedButton,
-          sheEvent.modifiers(),
-          sheEvent.pointerType());
+          osEvent.modifiers(),
+          osEvent.pointerType());
         break;
       }
 
       case os::Event::MouseDoubleClick: {
-        MouseButtons clickedButton = mouse_buttons_from_os_to_ui(sheEvent);
+        MouseButtons clickedButton = mouse_buttons_from_os_to_ui(osEvent);
         handleMouseDoubleClick(
-          sheEvent.position(),
+          osEvent.position(),
           clickedButton,
-          sheEvent.modifiers(),
-          sheEvent.pointerType());
+          osEvent.modifiers(),
+          osEvent.pointerType());
         break;
       }
 
       case os::Event::MouseWheel: {
-        handleMouseWheel(sheEvent.position(), m_mouseButtons,
-                         sheEvent.modifiers(),
-                         sheEvent.pointerType(),
-                         sheEvent.wheelDelta(),
-                         sheEvent.preciseWheel());
+        handleMouseWheel(osEvent.position(), m_mouseButtons,
+                         osEvent.modifiers(),
+                         osEvent.pointerType(),
+                         osEvent.wheelDelta(),
+                         osEvent.preciseWheel());
         break;
       }
 
       case os::Event::TouchMagnify: {
-        _internal_set_mouse_position(sheEvent.position());
+        _internal_set_mouse_position(osEvent.position());
 
-        handleTouchMagnify(sheEvent.position(),
-                           sheEvent.modifiers(),
-                           sheEvent.magnification());
+        handleTouchMagnify(osEvent.position(),
+                           osEvent.modifiers(),
+                           osEvent.magnification());
+        break;
+      }
+
+      case os::Event::Callback: {
+        // Call from the UI thread
+        osEvent.execCallback();
         break;
       }
 
@@ -501,10 +513,10 @@ void Manager::generateMessagesFromOSEvents()
 
   // Generate just one kSetCursorMessage for the last mouse position
   if (lastMouseMoveEvent.type() != os::Event::None) {
-    sheEvent = lastMouseMoveEvent;
-    generateSetCursorMessage(sheEvent.position(),
-                             sheEvent.modifiers(),
-                             sheEvent.pointerType());
+    osEvent = lastMouseMoveEvent;
+    generateSetCursorMessage(osEvent.position(),
+                             osEvent.modifiers(),
+                             osEvent.pointerType());
   }
 }
 
@@ -703,6 +715,7 @@ void Manager::dispatchMessages()
 
 void Manager::addToGarbage(Widget* widget)
 {
+  ASSERT(widget);
   m_garbage.push_back(widget);
 }
 
@@ -911,7 +924,7 @@ void Manager::freeCapture()
 void Manager::freeWidget(Widget* widget)
 {
 #ifdef DEBUG_UI_THREADS
-  ASSERT(manager_thread == base::this_thread::native_handle());
+  ASSERT(manager_thread == base::this_thread::native_id());
 #endif
 
   if (widget->hasFocus() || (widget == focus_widget))
@@ -942,7 +955,7 @@ void Manager::freeWidget(Widget* widget)
 void Manager::removeMessagesFor(Widget* widget)
 {
 #ifdef DEBUG_UI_THREADS
-  ASSERT(manager_thread == base::this_thread::native_handle());
+  ASSERT(manager_thread == base::this_thread::native_id());
 #endif
 
   for (Message* msg : msg_queue)
@@ -955,7 +968,7 @@ void Manager::removeMessagesFor(Widget* widget)
 void Manager::removeMessagesFor(Widget* widget, MessageType type)
 {
 #ifdef DEBUG_UI_THREADS
-  ASSERT(manager_thread == base::this_thread::native_handle());
+  ASSERT(manager_thread == base::this_thread::native_id());
 #endif
 
   for (Message* msg : msg_queue)
@@ -970,7 +983,7 @@ void Manager::removeMessagesFor(Widget* widget, MessageType type)
 void Manager::removeMessagesForTimer(Timer* timer)
 {
 #ifdef DEBUG_UI_THREADS
-  ASSERT(manager_thread == base::this_thread::native_handle());
+  ASSERT(manager_thread == base::this_thread::native_id());
 #endif
 
   for (auto it=msg_queue.begin(); it != msg_queue.end(); ) {
@@ -988,7 +1001,7 @@ void Manager::removeMessagesForTimer(Timer* timer)
 void Manager::addMessageFilter(int message, Widget* widget)
 {
 #ifdef DEBUG_UI_THREADS
-  ASSERT(manager_thread == base::this_thread::native_handle());
+  ASSERT(manager_thread == base::this_thread::native_id());
 #endif
 
   LockFilters lock;
@@ -1002,7 +1015,7 @@ void Manager::addMessageFilter(int message, Widget* widget)
 void Manager::removeMessageFilter(int message, Widget* widget)
 {
 #ifdef DEBUG_UI_THREADS
-  ASSERT(manager_thread == base::this_thread::native_handle());
+  ASSERT(manager_thread == base::this_thread::native_id());
 #endif
 
   LockFilters lock;
@@ -1020,7 +1033,7 @@ void Manager::removeMessageFilter(int message, Widget* widget)
 void Manager::removeMessageFilterFor(Widget* widget)
 {
 #ifdef DEBUG_UI_THREADS
-  ASSERT(manager_thread == base::this_thread::native_handle());
+  ASSERT(manager_thread == base::this_thread::native_id());
 #endif
 
   LockFilters lock;
@@ -1343,6 +1356,10 @@ void Manager::onSizeHint(SizeHintEvent& ev)
 
 int Manager::pumpQueue()
 {
+#ifdef DEBUG_UI_THREADS
+  ASSERT(manager_thread == base::this_thread::native_id());
+#endif
+
 #ifdef LIMIT_DISPATCH_TIME
   base::tick_t t = base::current_tick();
 #endif
@@ -1357,6 +1374,7 @@ int Manager::pumpQueue()
     // The message to process
     auto it = msg_queue.begin();
     Message* msg = *it;
+    ASSERT(msg);
 
     // Move the message from msg_queue to used_msg_queue
     msg_queue.erase(it);
@@ -1412,7 +1430,7 @@ int Manager::pumpQueue()
 bool Manager::sendMessageToWidget(Message* msg, Widget* widget)
 {
 #ifdef DEBUG_UI_THREADS
-  ASSERT(manager_thread == base::this_thread::native_handle());
+  ASSERT(manager_thread == base::this_thread::native_id());
 #endif
 
   if (!widget)
@@ -1421,8 +1439,6 @@ bool Manager::sendMessageToWidget(Message* msg, Widget* widget)
 #ifdef REPORT_EVENTS
   {
     static const char* msg_name[] = {
-      "kFunctionMessage",
-
       "kOpenMessage",
       "kCloseMessage",
       "kCloseDisplayMessage",
@@ -1447,7 +1463,7 @@ bool Manager::sendMessageToWidget(Message* msg, Widget* widget)
       "kMouseWheelMessage",
       "kTouchMagnifyMessage",
     };
-    static_assert(kFunctionMessage == 0 &&
+    static_assert(kOpenMessage == 0 &&
                   kTouchMagnifyMessage == sizeof(msg_name)/sizeof(const char*)-1,
                   "MessageType enum has changed");
     const char* string =
@@ -1496,8 +1512,11 @@ bool Manager::sendMessageToWidget(Message* msg, Widget* widget)
         surface->fillRect(gfx::rgba(0, 0, 255), paintMsg->rect());
       }
 
-      if (m_display)
-        m_display->flip(gfx::Rect(0, 0, display_w(), display_h()));
+      if (m_display) {
+        m_display->invalidateRegion(
+          gfx::Region(gfx::Rect(0, 0, display_w(), display_h())));
+        // TODO m_display->update() ??
+      }
 
       base::this_thread::sleep_for(0.002);
 #endif

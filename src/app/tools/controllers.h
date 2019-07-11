@@ -75,6 +75,10 @@ public:
       output.addPoint(input[0]);
     }
     else if (input.size() >= 2) {
+      // The freehand controller returns only the last two points to
+      // interwine because we accumulate (TracePolicy::Accumulate) the
+      // previously painted points (i.e. don't want to redraw all the
+      // stroke from the very beginning)
       output.addPoint(input[input.size()-2]);
       output.addPoint(input[input.size()-1]);
     }
@@ -240,11 +244,10 @@ public:
     gfx::Point offset = loop->statusBarPositionOffset();
     char buf[1024];
     int gcd = base::gcd(w, h);
-    sprintf(buf, ":start: %3d %3d :end: %3d %3d :size: %3d %3d :distance: %.1f :aspect_ratio: %2d : %2d",
+    sprintf(buf, ":start: %3d %3d :end: %3d %3d :size: %3d %3d :distance: %.1f",
             stroke[0].x+offset.x, stroke[0].y+offset.y,
             stroke[1].x+offset.x, stroke[1].y+offset.y,
-            w, h, std::sqrt(w*w + h*h),
-            w/gcd, h/gcd);
+            w, h, std::sqrt(w*w + h*h));
 
     if (hasAngle() ||
         loop->getIntertwine()->snapByAngle()) {
@@ -256,6 +259,10 @@ public:
                            static_cast<double>(stroke[1].x-stroke[0].x));
       sprintf(buf+strlen(buf), " :angle: %.1f", 180.0 * angle / PI);
     }
+
+    // Aspect ratio at the end
+    sprintf(buf+strlen(buf), " :aspect_ratio: %d:%d",
+            w/gcd, h/gcd);
 
     text = buf;
   }

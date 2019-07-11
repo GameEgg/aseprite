@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -63,6 +63,7 @@ namespace app {
       kAssociatedToFile = 1, // This sprite is associated to a file in the file-system
       kMaskVisible      = 2, // The mask wasn't hidden by the user
       kInhibitBackup    = 4, // Inhibit the backup process
+      kFullyBackedUp    = 8, // Full backup was done
     };
   public:
     Doc(Sprite* sprite);
@@ -96,6 +97,7 @@ namespace app {
     void notifyCelMoved(Layer* fromLayer, frame_t fromFrame, Layer* toLayer, frame_t toFrame);
     void notifyCelCopied(Layer* fromLayer, frame_t fromFrame, Layer* toLayer, frame_t toFrame);
     void notifySelectionChanged();
+    void notifySelectionBoundariesChanged();
 
     //////////////////////////////////////////////////////////////////////
     // File related properties
@@ -120,6 +122,9 @@ namespace app {
     // exported with other size)
     bool inhibitBackup() const;
     void setInhibitBackup(const bool inhibitBackup);
+
+    void markAsBackedUp();
+    bool isFullyBackedUp() const;
 
     //////////////////////////////////////////////////////////////////////
     // Loaded options from file
@@ -211,7 +216,7 @@ namespace app {
     ExtraCelRef m_extraCel;
 
     // Current mask.
-    std::unique_ptr<Mask> m_mask;
+    std::unique_ptr<doc::Mask> m_mask;
 
     // Current transformation.
     Transformation m_transformation;

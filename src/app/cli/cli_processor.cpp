@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -271,6 +271,14 @@ void CliProcessor::process(Context* ctx)
           if (m_exporter)
             m_exporter->setTrimCels(true);
         }
+        // --trim-by-grid
+        else if (opt == &m_options.trimByGrid()) {
+          cof.trim = cof.trimByGrid = true;
+          if (m_exporter) {
+            m_exporter->setTrimCels(true);
+            m_exporter->setTrimByGrid(true);
+          }
+        }
         // --crop x,y,width,height
         else if (opt == &m_options.crop()) {
           std::vector<std::string> parts;
@@ -360,10 +368,12 @@ void CliProcessor::process(Context* ctx)
             ditheringAlgorithm = render::DitheringAlgorithm::Ordered;
           else if (value.value() == "old")
             ditheringAlgorithm = render::DitheringAlgorithm::Old;
+          else if (value.value() == "error-diffusion")
+            ditheringAlgorithm = render::DitheringAlgorithm::ErrorDiffusion;
           else
             throw std::runtime_error("--dithering-algorithm needs a valid algorithm name\n"
                                      "Usage: --dithering-algorithm <algorithm>\n"
-                                     "Where <algorithm> can be none, ordered, or old");
+                                     "Where <algorithm> can be none, ordered, old, or error-diffusion");
         }
         // --dithering-matrix <id>
         else if (opt == &m_options.ditheringMatrix()) {
@@ -390,6 +400,9 @@ void CliProcessor::process(Context* ctx)
                 break;
               case render::DitheringAlgorithm::Old:
                 params.set("dithering", "old");
+                break;
+              case render::DitheringAlgorithm::ErrorDiffusion:
+                params.set("dithering", "error-diffusion");
                 break;
             }
 
@@ -712,8 +725,13 @@ void CliProcessor::saveFile(Context* ctx, const CliOpenFile& cof)
         // don't have sheet .json) Also, we should trim each frame
         // individually (a process that can be done only in
         // FileOp::operate()).
-        if (cof.trim)
-          ctx->executeCommand(trimCommand);
+        if (cof.trim) {
+          Params params;
+          if (cof.trimByGrid) {
+            params.set("byGrid", "true");
+          }
+          ctx->executeCommand(trimCommand, params);
+        }
 
         CliOpenFile itemCof = cof;
         FilenameInfo fnInfo;

@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -32,15 +33,15 @@
 #include "app/tools/tool.h"
 #include "app/tools/tool_box.h"
 #include "app/tools/tool_loop.h"
-#include "app/transaction.h"
+#include "app/tx.h"
 #include "app/ui/color_bar.h"
 #include "app/ui/context_bar.h"
 #include "app/ui/editor/editor.h"
 #include "app/ui/main_window.h"
 #include "app/ui/optional_alert.h"
 #include "app/ui/status_bar.h"
+#include "app/ui_context.h"
 #include "app/util/expand_cel_canvas.h"
-#include "doc/brush.h"
 #include "doc/cel.h"
 #include "doc/image.h"
 #include "doc/layer.h"
@@ -94,26 +95,23 @@ protected:
   doc::color_t m_bgColor;
   doc::color_t m_primaryColor;
   doc::color_t m_secondaryColor;
-  gfx::Region m_dirtyArea;
 
 public:
-  ToolLoopBase(Editor* editor,
-               Layer* layer,
-               tools::Tool* tool,
-               tools::Ink* ink,
+  ToolLoopBase(Editor* editor, Site site,
+               tools::Tool* tool, tools::Ink* ink,
                tools::Controller* controller,
-               Doc* document,
+               const BrushRef& brush,
                tools::ToolLoop::Button button,
                const app::Color& fgColor,
                const app::Color& bgColor)
     : m_editor(editor)
     , m_tool(tool)
-    , m_brush(App::instance()->contextBar()->activeBrush(m_tool, ink))
+    , m_brush(brush)
     , m_oldPatternOrigin(m_brush->patternOrigin())
-    , m_document(document)
-    , m_sprite(editor->sprite())
-    , m_layer(layer)
-    , m_frame(editor->frame())
+    , m_document(site.document())
+    , m_sprite(site.sprite())
+    , m_layer(site.layer())
+    , m_frame(site.frame())
     , m_rgbMap(nullptr)
     , m_docPref(Preferences::instance().document(m_document))
     , m_toolPref(Preferences::instance().tool(m_tool))
@@ -188,11 +186,13 @@ public:
       m_opacity = 255;
     }
 
+#ifdef ENABLE_UI // TODO add support when UI is not enabled
     if (m_toolPref.ink() == tools::InkType::SHADING) {
       m_shadingRemap.reset(
         App::instance()->contextBar()->createShadeRemap(
           button == tools::ToolLoop::Left));
     }
+#endif
   }
 
   ~ToolLoopBase() {
@@ -228,7 +228,10 @@ public:
   int getOpacity() override { return m_opacity; }
   int getTolerance() override { return m_tolerance; }
   bool getContiguous() override { return m_contiguous; }
-  tools::ToolLoopModifiers getModifiers() override { return m_editor->getToolLoopModifiers(); }
+  tools::ToolLoopModifiers getModifiers() override {
+    return m_editor ? m_editor->getToolLoopModifiers():
+                      tools::ToolLoopModifiers::kNone;
+  }
   filters::TiledMode getTiledMode() override { return m_docPref.tiled.mode(); }
   bool getGridVisible() override { return m_docPref.show.grid(); }
   bool getSnapToGrid() override { return m_docPref.grid.snap(); }
@@ -243,6 +246,12 @@ public:
     }
     return false;
   }
+
+  bool isPixelConnectivityEightConnected() override {
+    return (m_toolPref.floodfill.pixelConnectivity()
+            == app::gen::PixelConnectivity::EIGHT_CONNECTED);
+  }
+
   gfx::Rect getGridBounds() override { return m_docPref.grid.bounds(); }
   gfx::Point getCelOrigin() override { return m_celOrigin; }
   void setSpeed(const gfx::Point& speed) override { m_speed = speed; }
@@ -260,37 +269,82 @@ public:
   tools::Symmetry* getSymmetry() override { return m_symmetry.get(); }
   doc::Remap* getShadingRemap() override { return m_shadingRemap.get(); }
 
-  gfx::Region& getDirtyArea() override {
-    return m_dirtyArea;
+  void limitDirtyAreaToViewport(gfx::Region& rgn) override {
+#ifdef ENABLE_UI
+    // Visible region (on the screen) of the all editors showing the
+    // given document.
+    gfx::Region allVisibleRgn;
+
+    // TODO use the context given to the ToolLoopImpl ctor
+    for (auto e : UIContext::instance()->getAllEditorsIncludingPreview(m_document)) {
+      gfx::Region viewportRegion;
+      e->getDrawableRegion(viewportRegion, Widget::kCutTopWindows);
+      for (auto rc : viewportRegion)
+        allVisibleRgn |= gfx::Region(e->screenToEditor(rc).inflate(1, 1));
+    }
+
+    rgn &= allVisibleRgn;
+#endif // ENABLE_UI
   }
 
-  void updateDirtyArea() override {
+  void updateDirtyArea(const gfx::Region& dirtyArea) override {
+    if (!m_editor)
+      return;
+
+#ifdef ENABLE_UI
     // This is necessary here so the "on sprite crosshair" is hidden,
     // we update screen pixels with the new sprite, and then we show
     // the crosshair saving the updated pixels. It fixes problems with
     // filled shape tools when we release the button, or paint-bucket
     // when we press the button.
     HideBrushPreview hide(m_editor->brushPreview());
+#endif
 
     m_document->notifySpritePixelsModified(
-      m_sprite, m_dirtyArea, m_frame);
+      m_sprite, dirtyArea, m_frame);
   }
 
   void updateStatusBar(const char* text) override {
-    StatusBar::instance()->setStatusText(0, text);
+#ifdef ENABLE_UI
+    if (auto statusBar = StatusBar::instance())
+      statusBar->setStatusText(0, text);
+#endif
   }
 
   gfx::Point statusBarPositionOffset() override {
-    return -m_editor->mainTilePosition();
+#ifdef ENABLE_UI
+    return (m_editor ? -m_editor->mainTilePosition(): gfx::Point(0, 0));
+#else
+    return gfx::Point(0, 0);
+#endif
   }
 
   render::DitheringMatrix getDitheringMatrix() override {
+#ifdef ENABLE_UI // TODO add support when UI is not enabled
     return App::instance()->contextBar()->ditheringMatrix();
+#else
+    return render::DitheringMatrix();
+#endif
   }
 
   render::DitheringAlgorithmBase* getDitheringAlgorithm() override {
+#ifdef ENABLE_UI // TODO add support when UI is not enabled
     return App::instance()->contextBar()->ditheringAlgorithm();
+#else
+    return nullptr;
+#endif
   }
+
+  render::GradientType getGradientType() override {
+#ifdef ENABLE_UI // TODO add support when UI is not enabled
+    return App::instance()->contextBar()->gradientType();
+#else
+    return render::GradientType::Linear;
+#endif
+  }
+
+
+  void onSliceRect(const gfx::Rect& bounds) override { }
 
 };
 
@@ -307,48 +361,40 @@ class ToolLoopImpl : public ToolLoopBase {
   Mask* m_mask;
   gfx::Point m_maskOrigin;
   bool m_canceled;
-  Transaction m_transaction;
+  Tx m_tx;
   ExpandCelCanvas* m_expandCelCanvas;
   Image* m_floodfillSrcImage;
   bool m_saveLastPoint;
 
 public:
   ToolLoopImpl(Editor* editor,
-               Layer* layer,
+               Site site,
                Context* context,
                tools::Tool* tool,
                tools::Ink* ink,
                tools::Controller* controller,
-               Doc* document,
+               const BrushRef& brush,
                tools::ToolLoop::Button button,
                const app::Color& fgColor,
                const app::Color& bgColor,
                const bool saveLastPoint)
-    : ToolLoopBase(editor,
-                   layer,
-                   tool,
-                   ink,
-                   controller,
-                   document,
-                   button,
-                   fgColor,
-                   bgColor)
+    : ToolLoopBase(editor, site,
+                   tool, ink, controller, brush,
+                   button, fgColor, bgColor)
     , m_context(context)
     , m_canceled(false)
-    , m_transaction(m_context,
-                    m_tool->getText().c_str(),
-                    ((getInk()->isSelection() ||
-                      getInk()->isEyedropper() ||
-                      getInk()->isScrollMovement() ||
-                      getInk()->isSlice() ||
-                      getInk()->isZoom()) ? DoesntModifyDocument:
-                                            ModifyDocument))
+    , m_tx(m_context,
+           m_tool->getText().c_str(),
+           ((getInk()->isSelection() ||
+             getInk()->isEyedropper() ||
+             getInk()->isScrollMovement() ||
+             getInk()->isSlice() ||
+             getInk()->isZoom()) ? DoesntModifyDocument:
+                                   ModifyDocument))
     , m_expandCelCanvas(nullptr)
     , m_floodfillSrcImage(nullptr)
     , m_saveLastPoint(saveLastPoint)
   {
-    ASSERT(m_context->activeDocument() == m_editor->document());
-
     if (m_pointShape->isFloodFill()) {
       // Prepare a special image for floodfill when it's configured to
       // stop using all visible layers.
@@ -359,7 +405,9 @@ public:
 
         m_floodfillSrcImage->clear(m_sprite->transparentColor());
 
-        render::Render().renderSprite(
+        render::Render render;
+        render.setNewBlend(Preferences::instance().experimental.newBlend());
+        render.renderSprite(
           m_floodfillSrcImage,
           m_sprite,
           m_frame,
@@ -378,10 +426,9 @@ public:
     }
 
     m_expandCelCanvas = new ExpandCelCanvas(
-      editor->getSite(),
-      layer,
+      site, site.layer(),
       m_docPref.tiled.mode(),
-      m_transaction,
+      m_tx,
       ExpandCelCanvas::Flags(
         ExpandCelCanvas::NeedsSource |
         // If the tool is freehand-like, we can use the modified
@@ -421,7 +468,7 @@ public:
         (!m_document->isMaskVisible() ||
          (int(getModifiers()) & int(tools::ToolLoopModifiers::kReplaceSelection)))) {
       Mask emptyMask;
-      m_transaction.execute(new cmd::SetMask(m_document, &emptyMask));
+      m_tx(new cmd::SetMask(m_document, &emptyMask));
     }
 
     m_celOrigin = m_expandCelCanvas->getCel()->position();
@@ -444,10 +491,9 @@ public:
     if (!m_canceled) {
       // Freehand changes the last point
       if (m_saveLastPoint) {
-        m_transaction.execute(
-          new cmd::SetLastPoint(
-            m_document,
-            getController()->getLastPoint()));
+        m_tx(new cmd::SetLastPoint(
+               m_document,
+               getController()->getLastPoint()));
       }
 
       // Paint ink
@@ -463,7 +509,6 @@ public:
       }
       // Selection ink
       else if (getInk()->isSelection()) {
-        m_document->generateMaskBoundaries();
         redraw = true;
 
         // Show selection edges
@@ -475,7 +520,7 @@ public:
         redraw = true;
       }
 
-      m_transaction.commit();
+      m_tx.commit();
     }
     else {
       redraw = true;
@@ -493,8 +538,12 @@ public:
       }
     }
 
+#ifdef ENABLE_UI
     if (redraw)
       update_screen_for_document(m_document);
+#else
+    (void)redraw;               // To avoid warning about unused variable
+#endif
   }
 
   const Image* getSrcImage() override { return m_expandCelCanvas->getSourceCanvas(); }
@@ -519,17 +568,7 @@ public:
   bool useMask() override { return m_useMask; }
   Mask* getMask() override { return m_mask; }
   void setMask(Mask* newMask) override {
-    m_transaction.execute(new cmd::SetMask(m_document, newMask));
-  }
-  void addSlice(Slice* newSlice) override {
-    auto color = Preferences::instance().slices.defaultColor();
-    newSlice->userData().setColor(
-      doc::rgba(color.getRed(),
-                color.getGreen(),
-                color.getBlue(),
-                color.getAlpha()));
-
-    m_transaction.execute(new cmd::AddSlice(m_sprite, newSlice));
+    m_tx(new cmd::SetMask(m_document, newMask));
   }
   gfx::Point getMaskOrigin() override { return m_maskOrigin; }
   bool getFilled() override { return m_filled; }
@@ -540,7 +579,39 @@ public:
   void cancel() override { m_canceled = true; }
   bool isCanceled() override { return m_canceled; }
 
+  void onSliceRect(const gfx::Rect& bounds) override {
+#ifdef ENABLE_UI // TODO add support for slice tool from batch scripts without UI?
+    if (m_editor && getMouseButton() == ToolLoop::Left) {
+      // Try to select slices, but if it returns false, it means that
+      // there are no slices in the box to be selected, so we show a
+      // popup menu to create a new one.
+      if (!m_editor->selectSliceBox(bounds) &&
+          (bounds.w > 1 || bounds.h > 1)) {
+        Slice* slice = new Slice;
+        SliceKey key(bounds);
+        slice->insert(getFrame(), key);
+
+        auto color = Preferences::instance().slices.defaultColor();
+        slice->userData().setColor(
+          doc::rgba(color.getRed(),
+                    color.getGreen(),
+                    color.getBlue(),
+                    color.getAlpha()));
+
+        m_tx(new cmd::AddSlice(m_sprite, slice));
+        return;
+      }
+    }
+#endif
+
+    // Cancel the operation (do not create a new transaction for this
+    // no-op, e.g. just change the set of selected slices).
+    m_canceled = true;
+  }
+
 };
+
+#ifdef ENABLE_UI
 
 tools::ToolLoop* create_tool_loop(
   Editor* editor,
@@ -553,7 +624,7 @@ tools::ToolLoop* create_tool_loop(
   if (!tool || !ink)
     return nullptr;
 
-  Layer* layer;
+  Site site = editor->getSite();
 
   // For selection tools, we can use any layer (even without layers at
   // all), so we specify a nullptr here as the active layer. This is
@@ -566,10 +637,10 @@ tools::ToolLoop* create_tool_loop(
   // image/pixels to stop the flood-fill algorithm.
   if (ink->isSelection() &&
       !tool->getPointShape(button != tools::Pointer::Left ? 1: 0)->isFloodFill()) {
-    layer = nullptr;
+    site.layer(nullptr);
   }
   else {
-    layer = editor->layer();
+    Layer* layer = site.layer();
     if (!layer) {
       StatusBar::instance()->showTip(
         1000, "There is no active layer");
@@ -625,14 +696,12 @@ tools::ToolLoop* create_tool_loop(
        (controller->isFreehand() ||
         convertLineToFreehand));
 
+    ASSERT(context->activeDocument() == editor->document());
     return new ToolLoopImpl(
-      editor, layer, context,
-      tool,
-      ink,
-      controller,
-      editor->document(),
-      toolLoopButton,
-      fg, bg,
+      editor, site, context,
+      tool, ink, controller,
+      App::instance()->contextBar()->activeBrush(tool, ink),
+      toolLoopButton, fg, bg,
       saveLastPoint);
   }
   catch (const std::exception& ex) {
@@ -641,8 +710,46 @@ tools::ToolLoop* create_tool_loop(
   }
 }
 
+#endif // ENABLE_UI
+
+tools::ToolLoop* create_tool_loop_for_script(
+  Context* context,
+  const Site& site,
+  tools::Tool* tool,
+  tools::Ink* ink,
+  const app::Color& color,
+  const doc::BrushRef& brush)
+{
+  ASSERT(tool);
+  ASSERT(ink);
+  if (!site.layer())
+    return nullptr;
+
+  try {
+    const tools::ToolLoop::Button toolLoopButton = tools::ToolLoop::Left;
+    tools::Controller* controller = tool->getController(toolLoopButton);
+
+    // If we don't have the UI available, we reset the tools
+    // preferences, so scripts that are executed in batch mode have a
+    // reproducible behavior.
+    if (!context->isUIAvailable())
+      Preferences::instance().resetToolPreferences(tool);
+
+    return new ToolLoopImpl(
+      nullptr, site, context,
+      tool, ink, controller, brush,
+      toolLoopButton, color, color, false);
+  }
+  catch (const std::exception& ex) {
+    Console::showException(ex);
+    return nullptr;
+  }
+}
+
 //////////////////////////////////////////////////////////////////////
 // For preview
+
+#ifdef ENABLE_UI
 
 class PreviewToolLoopImpl : public ToolLoopBase {
   Image* m_image;
@@ -652,20 +759,14 @@ public:
     Editor* editor,
     tools::Tool* tool,
     tools::Ink* ink,
-    Doc* document,
     const app::Color& fgColor,
     const app::Color& bgColor,
     Image* image,
     const gfx::Point& celOrigin)
-    : ToolLoopBase(editor,
-                   editor->layer(),
-                   tool,
-                   ink,
-                   tool->getController(tools::ToolLoop::Left),
-                   document,
-                   tools::ToolLoop::Left,
-                   fgColor,
-                   bgColor)
+    : ToolLoopBase(editor, editor->getSite(),
+                   tool, ink, tool->getController(tools::ToolLoop::Left),
+                   App::instance()->contextBar()->activeBrush(tool, ink),
+                   tools::ToolLoop::Left, fgColor, bgColor)
     , m_image(image)
   {
     m_celOrigin = celOrigin;
@@ -697,7 +798,6 @@ public:
   bool useMask() override { return false; }
   Mask* getMask() override { return nullptr; }
   void setMask(Mask* newMask) override { }
-  void addSlice(Slice* newSlice) override { }
   gfx::Point getMaskOrigin() override { return gfx::Point(0, 0); }
   bool getFilled() override { return false; }
   bool getPreviewFilled() override { return false; }
@@ -736,16 +836,15 @@ tools::ToolLoop* create_tool_loop_preview(
   // Create the new tool loop
   try {
     return new PreviewToolLoopImpl(
-      editor,
-      tool,
-      ink,
-      editor->document(),
+      editor, tool, ink,
       fg, bg, image, celOrigin);
   }
   catch (const std::exception&) {
     return nullptr;
   }
 }
+
+#endif // ENABLE_UI
 
 //////////////////////////////////////////////////////////////////////
 

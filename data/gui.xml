@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Aseprite -->
-<!-- Copyright (C) 2018  Igara Studio S.A. -->
+<!-- Copyright (C) 2018-2019  Igara Studio S.A. -->
 <!-- Copyright (C) 2001-2018  David Capello -->
 <gui version="1.3-dev">
   <!-- Keyboard shortcuts -->
@@ -11,6 +11,7 @@
       <!-- File -->
       <key command="NewFile" shortcut="Ctrl+N" mac="Cmd+N" />
       <key command="OpenFile" shortcut="Ctrl+O" mac="Cmd+O" />
+      <key command="ReopenClosedFile" shortcut="Ctrl+Shift+T" mac="Cmd+Shift+T" />
       <key command="SaveFile" shortcut="Ctrl+S" mac="Cmd+S" />
       <key command="SaveFileAs" shortcut="Ctrl+Shift+S" mac="Cmd+Shift+S" />
       <key command="SaveFileCopyAs" shortcut="Ctrl+Alt+Shift+S" mac="Cmd+Alt+Shift+S" />
@@ -53,6 +54,7 @@
       <key command="ReplaceColor" shortcut="Shift+R" />
       <key command="HueSaturation" shortcut="Ctrl+U" mac="Cmd+U" />
       <key command="ConvolutionMatrix" shortcut="F9" />
+      <key command="Outline" shortcut="Shift+O" />
       <key command="ColorCurve" shortcut="Ctrl+M" />
       <key command="ColorCurve" shortcut="F10" />
       <key command="PasteText" shortcut="T" />
@@ -61,6 +63,7 @@
       <key command="KeyboardShortcuts" shortcut="Ctrl+Alt+Shift+K" mac="Cmd+Alt+Shift+K" />
       <!-- Sprite -->
       <key command="SpriteProperties" shortcut="Ctrl+P" mac="Cmd+P" />
+      <key command="CanvasSize" shortcut="C" />
       <!-- Layer -->
       <key command="LayerProperties" shortcut="Shift+P" />
       <key command="LayerVisibility" shortcut="Shift+X" />
@@ -71,6 +74,15 @@
       </key>
       <key command="NewLayer" shortcut="Alt+Shift+N">
         <param name="group" value="true" />
+      </key>
+      <key command="NewLayer" shortcut="Ctrl+Shift+V" mac="Cmd+Shift+V">
+        <param name="fromClipboard" value="true" />
+      </key>
+      <key command="NewLayer" shortcut="Ctrl+J" mac="Cmd+J">
+        <param name="viaCopy" value="true" />
+      </key>
+      <key command="NewLayer" shortcut="Ctrl+Shift+J" mac="Cmd+Shift+J">
+        <param name="viaCut" value="true" />
       </key>
       <key command="GotoPreviousLayer" shortcut="Down" context="Normal" />
       <key command="GotoNextLayer" shortcut="Up" context="Normal" />
@@ -101,6 +113,7 @@
       <key command="GotoLastFrame" shortcut="End" />
       <key command="GotoFrame" shortcut="Alt+G" />
       <key command="PlayAnimation" shortcut="Enter" />
+      <key command="PlayAnimation" shortcut="Enter Pad" />
       <key command="PlayPreviewAnimation" shortcut="Shift+Enter" />
       <!-- Cels -->
       <key command="ClearCel" />
@@ -259,7 +272,7 @@
       <key command="LayerOpacity" shortcut="Shift+4"><param name="opacity" value="255" /></key>
 
       <!-- Scroll to center -->
-      <key command="ScrollCenter" shortcut="Shift+C" />
+      <key command="ScrollCenter" shortcut="Shift+Z" />
       <key command="FitScreen" shortcut="Ctrl+0" mac="Cmd+0" />
 
       <!-- Scroll with arrows -->
@@ -479,6 +492,10 @@
       <key command="SymmetryMode">
         <param name="orientation" value="horizontal" />
       </key>
+      <key command="AutocropSprite" />
+      <key command="AutocropSprite">
+        <param name="byGrid" value="true" />
+      </key>
     </commands>
 
     <!-- Keyboard shortcuts to select tools -->
@@ -496,7 +513,7 @@
       <key tool="eyedropper" shortcut="I" />
       <key tool="hand" shortcut="H" />
       <key tool="move" shortcut="V" />
-      <key tool="slice" shortcut="C" />
+      <key tool="slice" shortcut="Shift+C" />
       <key tool="zoom" shortcut="Z" />
 
       <key tool="paint_bucket" shortcut="G" />
@@ -583,7 +600,12 @@
       <menu text="@.file">
         <item command="NewFile" text="@.file_new" />
         <item command="OpenFile" text="@.file_open" />
-        <item id="recent_list" text="@.file_open_recent" />
+        <menu text="@.file_open_recent">
+	  <item command="ReopenClosedFile" text="@.file_reopen_closed" />
+          <separator id="recent_files_placeholder" />
+          <separator />
+	  <item command="ClearRecentFiles" text="@.file_clear_recent_files" />
+	</menu>
         <separator />
         <item command="SaveFile" text="@.file_save" />
         <item command="SaveFileAs" text="@.file_save_as" />
@@ -610,6 +632,18 @@
         <item command="Copy" text="@.edit_copy" />
         <item command="CopyMerged" text="@.edit_copy_merged" />
         <item command="Paste" text="@.edit_paste" />
+        <menu text="@.edit_paste_special">
+          <item command="NewFile" text="@.edit_paste_special_new_sprite">
+            <param name="fromClipboard" value="true" />
+          </item>
+          <item command="NewLayer" text="@.edit_paste_special_new_layer">
+            <param name="fromClipboard" value="true" />
+          </item>
+          <item command="NewLayer" text="@.edit_paste_special_new_ref_layer">
+            <param name="reference" value="true" />
+            <param name="fromClipboard" value="true" />
+          </item>
+        </menu>
         <item command="Clear" text="@.edit_clear" />
         <separator />
         <item command="Fill" text="@.edit_fill" />
@@ -680,6 +714,7 @@
           <item command="ColorCurve" text="@.edit_adjustments_color_curve" />
         </menu>
         <menu text="@.edit_fx" id="fx_popup_menu">
+          <item command="Outline" text="@.edit_fx_outline" />
           <item command="ConvolutionMatrix" text="@.edit_fx_convolution_matrix" />
           <item command="Despeckle" text="@.edit_fx_despeckle" />
         </menu>
@@ -741,10 +776,24 @@
         <item command="LayerLock" text="@.layer_lock_layers" />
         <item command="OpenGroup" text="@.layer_open_group" />
         <separator />
-        <item command="NewLayer" text="@.layer_new_layer" />
-        <item command="NewLayer" text="@.layer_new_group">
-          <param name="group" value="true" />
-        </item>
+        <menu text="@.layer_new">
+          <item command="NewLayer" text="@.layer_new_layer" />
+          <item command="NewLayer" text="@.layer_new_group">
+            <param name="group" value="true" />
+          </item>
+          <separator />
+          <item command="NewLayer" text="@.layer_new_layer_via_copy">
+            <param name="viaCopy" value="true" />
+          </item>
+          <item command="NewLayer" text="@.layer_new_layer_via_cut">
+            <param name="viaCut" value="true" />
+          </item>
+          <separator />
+          <item command="NewLayer" text="@.layer_new_reference_layer_from_file">
+            <param name="reference" value="true" />
+            <param name="fromFile" value="true" />
+          </item>
+        </menu>
         <item command="RemoveLayer" text="@.layer_delete_layer" />
         <item command="BackgroundFromLayer" text="@.layer_background_from_layer" />
         <item command="LayerFromBackground" text="@.layer_layer_from_background" />
@@ -754,11 +803,6 @@
         <item command="FlattenLayers" text="@.layer_flatten" />
         <item command="FlattenLayers" text="@.layer_flatten_visible">
           <param name="visibleOnly" value="true" />
-        </item>
-        <separator />
-        <item command="NewLayer" text="@.layer_add_reference_layer">
-          <param name="reference" value="true" />
-          <param name="from-file" value="true" />
         </item>
       </menu>
       <menu text="@.frame">

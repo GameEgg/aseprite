@@ -14,9 +14,11 @@
 #include "app/cmd/assign_color_profile.h"
 #include "app/cmd/clear_cel.h"
 #include "app/cmd/convert_color_profile.h"
+#include "app/cmd/flatten_layers.h"
 #include "app/cmd/remove_frame_tag.h"
 #include "app/cmd/remove_layer.h"
 #include "app/cmd/remove_slice.h"
+#include "app/cmd/set_mask.h"
 #include "app/cmd/set_sprite_size.h"
 #include "app/cmd/set_transparent_color.h"
 #include "app/color_spaces.h"
@@ -26,6 +28,7 @@
 #include "app/doc.h"
 #include "app/doc_access.h"
 #include "app/doc_api.h"
+#include "app/doc_range.h"
 #include "app/file/palette_file.h"
 #include "app/script/docobj.h"
 #include "app/script/engine.h"
@@ -52,23 +55,68 @@ namespace {
 
 int Sprite_new(lua_State* L)
 {
-  doc::ImageSpec spec(doc::ColorMode::RGB, 1, 1, 0);
-  if (auto spec2 = may_get_obj<doc::ImageSpec>(L, 1)) {
-    spec = *spec2;
+  std::unique_ptr<Doc> doc;
+
+  // Duplicate a sprite
+  if (auto otherSpr = may_get_docobj<doc::Sprite>(L, 1)) {
+    Doc* otherDoc = static_cast<Doc*>(otherSpr->document());
+    doc.reset(otherDoc->duplicate(DuplicateExactCopy));
   }
   else {
-    const int w = lua_tointeger(L, 1);
-    const int h = lua_tointeger(L, 2);
-    const int colorMode = (lua_isnone(L, 3) ? IMAGE_RGB: lua_tointeger(L, 3));
-    spec.setWidth(w);
-    spec.setHeight(h);
-    spec.setColorMode((doc::ColorMode)colorMode);
-    spec.setColorSpace(get_working_rgb_space_from_preferences());
-  }
+    doc::ImageSpec spec(doc::ColorMode::RGB, 1, 1, 0);
+    if (auto spec2 = may_get_obj<doc::ImageSpec>(L, 1)) {
+      spec = *spec2;
+    }
+    else {
+      if (lua_istable(L, 1)) {
+        // Sprite{ fromFile }
+        int type = lua_getfield(L, 1, "fromFile");
+        if (type != LUA_TNIL) {
+          if (const char* fromFile = lua_tostring(L, -1)) {
+            std::string fn = fromFile;
+            lua_pop(L, 1);
+            return load_sprite_from_file(
+              L, fn.c_str(),
+              LoadSpriteFromFileParam::FullAniAsSprite);
+          }
+        }
+        lua_pop(L, 1);
 
-  std::unique_ptr<Sprite> sprite(Sprite::createBasicSprite(spec, 256));
-  std::unique_ptr<Doc> doc(new Doc(sprite.get()));
-  sprite.release();
+        // In case that there is no "fromFile" field
+        if (type == LUA_TNIL) {
+          // Sprite{ width, height, colorMode }
+          lua_getfield(L, 1, "width");
+          lua_getfield(L, 1, "height");
+          spec.setWidth(lua_tointeger(L, -2));
+          spec.setHeight(lua_tointeger(L, -1));
+          lua_pop(L, 2);
+
+          type = lua_getfield(L, 1, "colorMode");
+          if (type != LUA_TNIL)
+            spec.setColorMode((doc::ColorMode)lua_tointeger(L, -1));
+          lua_pop(L, 1);
+        }
+      }
+      else {
+        const int w = lua_tointeger(L, 1);
+        const int h = lua_tointeger(L, 2);
+        const int colorMode = (lua_isnone(L, 3) ? IMAGE_RGB: lua_tointeger(L, 3));
+        spec.setWidth(w);
+        spec.setHeight(h);
+        spec.setColorMode((doc::ColorMode)colorMode);
+      }
+      spec.setColorSpace(get_working_rgb_space_from_preferences());
+    }
+
+    if (spec.width() < 1)
+      return luaL_error(L, "invalid width value = %d in Sprite()", spec.width());
+    if (spec.height() < 1)
+      return luaL_error(L, "invalid height value = %d in Sprite()", spec.height());
+
+    std::unique_ptr<Sprite> sprite(Sprite::createBasicSprite(spec, 256));
+    doc.reset(new Doc(sprite.get()));
+    sprite.release();
+  }
 
   app::Context* ctx = App::instance()->context();
   doc->setContext(ctx);
@@ -247,6 +295,20 @@ int Sprite_convertColorSpace(lua_State* L)
        sprite, std::make_shared<gfx::ColorSpace>(*cs)));
   tx.commit();
   return 1;
+}
+
+int Sprite_flatten(lua_State* L)
+{
+  auto sprite = get_docobj<Sprite>(L, 1);
+
+  DocRange range;
+  for (auto layer : sprite->root()->layers())
+    range.selectLayer(layer);
+
+  Tx tx;
+  tx(new cmd::FlattenLayers(sprite, range.selectedLayers(), true));
+  tx.commit();
+  return 0;
 }
 
 int Sprite_newLayer(lua_State* L)
@@ -639,6 +701,17 @@ int Sprite_set_height(lua_State* L)
   return 0;
 }
 
+int Sprite_set_selection(lua_State* L)
+{
+  auto sprite = get_docobj<Sprite>(L, 1);
+  const auto mask = get_mask_from_arg(L, 2);
+  Doc* doc = static_cast<Doc*>(sprite->document());
+  Tx tx;
+  tx(new cmd::SetMask(doc, mask));
+  tx.commit();
+  return 0;
+}
+
 int Sprite_get_bounds(lua_State* L)
 {
   const auto sprite = get_docobj<Sprite>(L, 1);
@@ -657,6 +730,7 @@ const luaL_Reg Sprite_methods[] = {
   { "setPalette", Sprite_setPalette },
   { "assignColorSpace", Sprite_assignColorSpace },
   { "convertColorSpace", Sprite_convertColorSpace },
+  { "flatten", Sprite_flatten },
   // Layers
   { "newLayer", Sprite_newLayer },
   { "newGroup", Sprite_newGroup },
@@ -684,7 +758,7 @@ const Property Sprite_properties[] = {
   { "colorMode", Sprite_get_colorMode, nullptr },
   { "colorSpace", Sprite_get_colorSpace, Sprite_assignColorSpace },
   { "spec", Sprite_get_spec, nullptr },
-  { "selection", Sprite_get_selection, nullptr },
+  { "selection", Sprite_get_selection, Sprite_set_selection },
   { "frames", Sprite_get_frames, nullptr },
   { "palettes", Sprite_get_palettes, nullptr },
   { "layers", Sprite_get_layers, nullptr },

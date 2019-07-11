@@ -1,5 +1,5 @@
 // Aseprite Document IO Library
-// Copyright (c) 2018 Igara Studio S.A.
+// Copyright (c) 2018-2019 Igara Studio S.A.
 // Copyright (c) 2001-2018 David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -90,7 +90,7 @@ bool AsepriteDecoder::decode()
         sprite->setFrameDuration(frame, frame_header.duration);
 
       // Read chunks
-      for (int c=0; c<frame_header.chunks; c++) {
+      for (uint32_t c=0; c<frame_header.chunks; c++) {
         // Start chunk position
         size_t chunk_pos = f()->tell();
         delegate()->progress((float)chunk_pos / (float)header.size);
@@ -196,6 +196,12 @@ bool AsepriteDecoder::decode()
             readUserDataChunk(&userData);
             if (last_object_with_user_data)
               last_object_with_user_data->setUserData(userData);
+            break;
+          }
+
+          case ASE_FILE_CHUNK_TILESET: {
+            delegate()->error(
+              "Warning: The given file contains a tileset.\nThis version of Aseprite doesn't support tilemap layers.\n");
             break;
           }
 
@@ -656,12 +662,10 @@ doc::Cel* AsepriteDecoder::readCelChunk(doc::Sprite* sprite,
         // different X, Y, or opacity per link, in that case we must
         // create a copy.
         if (link->x() == x && link->y() == y && link->opacity() == opacity) {
-          cel.reset(doc::Cel::createLink(link));
-          cel->setFrame(frame);
+          cel.reset(doc::Cel::MakeLink(frame, link));
         }
         else {
-          cel.reset(doc::Cel::createCopy(link));
-          cel->setFrame(frame);
+          cel.reset(doc::Cel::MakeCopy(frame, link));
           cel->setPosition(x, y);
           cel->setOpacity(opacity);
         }

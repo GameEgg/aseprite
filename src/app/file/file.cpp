@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -41,6 +41,7 @@
 #include "render/render.h"
 #include "ui/alert.h"
 #include "ui/listitem.h"
+#include "ui/system.h"
 
 #include "ask_for_color_profile.xml.h"
 #include "open_sequence.xml.h"
@@ -75,7 +76,11 @@ base::paths get_writable_extensions()
 Doc* load_document(Context* context, const std::string& filename)
 {
   /* TODO add a option to configure what to do with the sequence */
-  std::unique_ptr<FileOp> fop(FileOp::createLoadDocumentOperation(context, filename, FILE_LOAD_SEQUENCE_NONE));
+  std::unique_ptr<FileOp> fop(
+    FileOp::createLoadDocumentOperation(
+      context, filename,
+      FILE_LOAD_CREATE_PALETTE |
+      FILE_LOAD_SEQUENCE_NONE));
   if (!fop)
     return nullptr;
 
@@ -173,10 +178,13 @@ FileOpROI::FileOpROI(const Doc* doc,
 }
 
 // static
-FileOp* FileOp::createLoadDocumentOperation(Context* context, const std::string& filename, int flags)
+FileOp* FileOp::createLoadDocumentOperation(Context* context,
+                                            const std::string& filename,
+                                            const int flags,
+                                            const FileOpConfig* config)
 {
   std::unique_ptr<FileOp> fop(
-    new FileOp(FileOpLoad, context));
+    new FileOp(FileOpLoad, context, config));
   if (!fop)
     return nullptr;
 
@@ -303,6 +311,9 @@ FileOp* FileOp::createLoadDocumentOperation(Context* context, const std::string&
   if (flags & FILE_LOAD_ONE_FRAME)
     fop->m_oneframe = true;
 
+  if (flags & FILE_LOAD_CREATE_PALETTE)
+    fop->m_createPaletteFromRgba = true;
+
   // Does data file exist?
   if (flags & FILE_LOAD_DATA_FILE) {
     std::string dataFilename = base::replace_extension(filename, "aseprite-data");
@@ -322,7 +333,7 @@ FileOp* FileOp::createSaveDocumentOperation(const Context* context,
                                             const bool ignoreEmptyFrames)
 {
   std::unique_ptr<FileOp> fop(
-    new FileOp(FileOpSave, const_cast<Context*>(context)));
+    new FileOp(FileOpSave, const_cast<Context*>(context), nullptr));
 
   // Document to save
   fop->m_document = const_cast<Doc*>(roi.document());
@@ -432,17 +443,21 @@ FileOp* FileOp::createSaveDocumentOperation(const Context* context,
 
   // Palette with alpha
   if (!fop->m_format->support(FILE_SUPPORT_PALETTE_WITH_ALPHA)) {
-    bool done = false;
-    for (const Palette* pal : fop->m_document->sprite()->getPalettes()) {
-      for (int c=0; c<pal->size(); ++c) {
-        if (rgba_geta(pal->getEntry(c)) < 255) {
-          warnings += "<<- Palette with alpha channel";
-          done = true;
-          break;
+    if (!fop->m_format->support(FILE_SUPPORT_RGBA) ||
+        !fop->m_format->support(FILE_SUPPORT_INDEXED) ||
+        fop->document()->colorMode() == ColorMode::INDEXED) {
+      bool done = false;
+      for (const Palette* pal : fop->m_document->sprite()->getPalettes()) {
+        for (int c=0; c<pal->size(); ++c) {
+          if (rgba_geta(pal->getEntry(c)) < 255) {
+            warnings += "<<- Palette with alpha channel";
+            done = true;
+            break;
+          }
         }
+        if (done)
+          break;
       }
-      if (done)
-        break;
     }
   }
 
@@ -698,7 +713,9 @@ void FileOp::operate(IFileOpProgress* progress)
         m_document->sprite()  &&
         !m_dataFilename.empty()) {
       try {
-        load_aseprite_data_file(m_dataFilename, m_document);
+        load_aseprite_data_file(m_dataFilename,
+                                m_document,
+                                m_config.defaultSliceColor);
       }
       catch (const std::exception& ex) {
         setError("Error loading data file: %s\n", ex.what());
@@ -726,6 +743,8 @@ void FileOp::operate(IFileOpProgress* progress)
 
       // For each frame in the sprite.
       render::Render render;
+      render.setNewBlend(m_config.newBlend);
+
       frame_t outputFrame = 0;
       for (frame_t frame : m_roi.selectedFrames()) {
         // Draw the "frame" in "m_seq.image"
@@ -881,13 +900,14 @@ void FileOp::postLoad()
   Sprite* sprite = m_document->sprite();
   if (sprite) {
     // Creates a suitable palette for RGB images
-    if (sprite->pixelFormat() == IMAGE_RGB &&
+    if (m_createPaletteFromRgba &&
+        sprite->pixelFormat() == IMAGE_RGB &&
         sprite->getPalettes().size() <= 1 &&
         sprite->palette(frame_t(0))->isBlack()) {
       base::SharedPtr<Palette> palette(
         render::create_palette_from_sprite(
           sprite, frame_t(0), sprite->lastFrame(), true,
-          nullptr, nullptr));
+          nullptr, nullptr, m_config.newBlend));
 
       sprite->resetPalettes();
       sprite->setPalette(palette.get(), false);
@@ -899,10 +919,10 @@ void FileOp::postLoad()
   app::gen::ColorProfileBehavior behavior =
     app::gen::ColorProfileBehavior::DISABLE;
 
-  if (Preferences::instance().color.manage()) {
+  if (m_config.preserveColorProfile) {
     // Embedded color profile
     if (this->hasEmbeddedColorProfile()) {
-      behavior = Preferences::instance().color.filesWithProfile();
+      behavior = m_config.filesWithProfile;
       if (behavior == app::gen::ColorProfileBehavior::ASK) {
 #ifdef ENABLE_UI
         if (m_context && m_context->isUIAvailable()) {
@@ -928,7 +948,7 @@ void FileOp::postLoad()
     }
     // Missing color space
     else {
-      behavior = Preferences::instance().color.missingProfile();
+      behavior = m_config.missingProfile;
       if (behavior == app::gen::ColorProfileBehavior::ASK) {
 #ifdef ENABLE_UI
         if (m_context && m_context->isUIAvailable()) {
@@ -957,6 +977,7 @@ void FileOp::postLoad()
 
     case app::gen::ColorProfileBehavior::DISABLE:
       sprite->setColorSpace(gfx::ColorSpace::MakeNone());
+      m_document->notifyColorSpaceChanged();
       break;
 
     case app::gen::ColorProfileBehavior::EMBEDDED:
@@ -965,7 +986,7 @@ void FileOp::postLoad()
 
     case app::gen::ColorProfileBehavior::CONVERT: {
       // Convert to the working color profile
-      auto gfxCS = get_working_rgb_space_from_preferences();
+      auto gfxCS = m_config.workingCS;
       if (!gfxCS->nearlyEqual(*spriteCS))
         cmd::convert_color_profile(sprite, gfxCS);
       break;
@@ -973,8 +994,9 @@ void FileOp::postLoad()
 
     case app::gen::ColorProfileBehavior::ASSIGN: {
       // Convert to the working color profile
-      auto gfxCS = get_working_rgb_space_from_preferences();
+      auto gfxCS = m_config.workingCS;
       sprite->setColorSpace(gfxCS);
+      m_document->notifyColorSpaceChanged();
       break;
     }
   }
@@ -1094,6 +1116,9 @@ void FileOp::setError(const char *format, ...)
   // Concatenate the new error
   {
     scoped_lock lock(m_mutex);
+    // Add a newline char automatically if it's needed
+    if (!m_error.empty() && m_error.back() != '\n')
+      m_error.push_back('\n');
     m_error += buf_error;
   }
 }
@@ -1157,7 +1182,9 @@ bool FileOp::isStop() const
   return stop;
 }
 
-FileOp::FileOp(FileOpType type, Context* context)
+FileOp::FileOp(FileOpType type,
+               Context* context,
+               const FileOpConfig* config)
   : m_type(type)
   , m_format(nullptr)
   , m_context(context)
@@ -1167,11 +1194,18 @@ FileOp::FileOp(FileOpType type, Context* context)
   , m_done(false)
   , m_stop(false)
   , m_oneframe(false)
+  , m_createPaletteFromRgba(false)
   , m_ignoreEmpty(false)
-  , m_preserveColorProfile(
-      Preferences::instance().color.manage())
   , m_embeddedColorProfile(false)
 {
+  if (config)
+    m_config = *config;
+  else if (ui::is_ui_thread())
+    m_config.fillFromPreferences();
+  else {
+    LOG(VERBOSE, "FILE: Using a file operation with default configuration\n");
+  }
+
   m_seq.palette = nullptr;
   m_seq.image.reset();
   m_seq.progress_offset = 0.0f;

@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2015-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -14,8 +14,10 @@
 #include "app/commands/params.h"
 #include "app/context.h"
 #include "app/doc.h"
+#include "app/doc_access.h"
 #include "app/i18n/strings.h"
 #include "app/loop_tag.h"
+#include "app/modules/palettes.h"
 #include "app/pref/preferences.h"
 #include "app/script/api_version.h"
 #include "app/script/docobj.h"
@@ -23,14 +25,24 @@
 #include "app/script/luacpp.h"
 #include "app/script/security.h"
 #include "app/site.h"
+#include "app/tools/active_tool.h"
+#include "app/tools/tool_box.h"
+#include "app/tools/tool_loop.h"
+#include "app/tools/tool_loop_manager.h"
 #include "app/tx.h"
+#include "app/ui/context_bar.h"
 #include "app/ui/doc_view.h"
 #include "app/ui/editor/editor.h"
+#include "app/ui/editor/tool_loop_impl.h"
 #include "app/ui/timeline/timeline.h"
 #include "app/ui_context.h"
 #include "base/fs.h"
+#include "base/replace_string.h"
+#include "base/version.h"
 #include "doc/frame_tag.h"
 #include "doc/layer.h"
+#include "doc/primitives.h"
+#include "render/render.h"
 #include "ui/alert.h"
 
 #include <iostream>
@@ -38,14 +50,13 @@
 namespace app {
 namespace script {
 
-namespace {
-
-int App_open(lua_State* L)
+int load_sprite_from_file(lua_State* L, const char* filename,
+                          const LoadSpriteFromFileParam param)
 {
-  std::string absFn = base::get_absolute_path(luaL_checkstring(L, 1));
-    if (!ask_access(L, absFn.c_str(), FileAccessMode::Read, true))
-      return luaL_error(L, "script doesn't have access to open file %s",
-                        absFn.c_str());
+  std::string absFn = base::get_absolute_path(filename);
+  if (!ask_access(L, absFn.c_str(), FileAccessMode::Read, true))
+    return luaL_error(L, "script doesn't have access to open file %s",
+                      absFn.c_str());
 
   app::Context* ctx = App::instance()->context();
   Doc* oldDoc = ctx->activeDocument();
@@ -54,14 +65,52 @@ int App_open(lua_State* L)
     Commands::instance()->byId(CommandId::OpenFile());
   Params params;
   params.set("filename", absFn.c_str());
+  if (param == LoadSpriteFromFileParam::OneFrameAsImage)
+    params.set("oneframe", "true");
   ctx->executeCommand(openCommand, params);
 
   Doc* newDoc = ctx->activeDocument();
-  if (newDoc != oldDoc)
-    push_docobj(L, newDoc->sprite());
+  if (newDoc != oldDoc) {
+    if (param == LoadSpriteFromFileParam::OneFrameAsImage) {
+      doc::Sprite* sprite = newDoc->sprite();
+
+      // Render the first frame of the sprite
+      // TODO add "frame" parameter to render different frames
+      std::unique_ptr<doc::Image> image(doc::Image::create(sprite->spec()));
+      doc::clear_image(image.get(), sprite->transparentColor());
+      render::Render().renderSprite(image.get(), sprite, 0);
+
+      // Restore the old document and active and destroy the recently
+      // loaded sprite.
+      ctx->setActiveDocument(oldDoc);
+
+      try {
+        DocDestroyer destroyer(ctx, newDoc, 500);
+        destroyer.destroyDocument();
+      }
+      catch (const LockedDocException& ex) {
+        // Almost impossible?
+        luaL_error(L, "cannot lock document to close it\n%s", ex.what());
+      }
+
+      push_image(L, image.release());
+      return 1;
+    }
+    else {
+      push_docobj(L, newDoc->sprite());
+    }
+  }
   else
     lua_pushnil(L);
   return 1;
+}
+
+namespace {
+
+int App_open(lua_State* L)
+{
+  return load_sprite_from_file(
+    L, luaL_checkstring(L, 1), LoadSpriteFromFileParam::FullAniAsSprite);
 }
 
 int App_exit(lua_State* L)
@@ -182,6 +231,118 @@ int App_refresh(lua_State* L)
 #ifdef ENABLE_UI
   app_refresh_screen();
 #endif
+  return 0;
+}
+
+int App_useTool(lua_State* L)
+{
+  // First argument must be a table
+  if (!lua_istable(L, 1))
+    return luaL_error(L, "app.useTool() must be called with a table as its first argument");
+
+  auto ctx = App::instance()->context();
+  Site site = ctx->activeSite();
+
+  // Draw in a specific cel, layer, or frame
+  int type = lua_getfield(L, 1, "layer");
+  if (type != LUA_TNIL) {
+    if (auto layer = get_docobj<Layer>(L, -1)) {
+      site.document(static_cast<Doc*>(layer->sprite()->document()));
+      site.sprite(layer->sprite());
+      site.layer(layer);
+    }
+  }
+  lua_pop(L, 1);
+
+  type = lua_getfield(L, 1, "frame");
+  if (type != LUA_TNIL) {
+    site.frame(get_frame_number_from_arg(L, -1));
+  }
+  lua_pop(L, 1);
+
+  type = lua_getfield(L, 1, "cel");
+  if (type != LUA_TNIL) {
+    if (auto cel = get_docobj<Cel>(L, -1)) {
+      site.document(static_cast<Doc*>(cel->sprite()->document()));
+      site.sprite(cel->sprite());
+      site.layer(cel->layer());
+      site.frame(cel->frame());
+    }
+  }
+  lua_pop(L, 1);
+
+  if (!site.document())
+    return luaL_error(L, "there is no active document to draw with the tool");
+
+  // Select tool by name
+  tools::Tool* tool = App::instance()->activeToolManager()->activeTool();
+  tools::Ink* ink = tool->getInk(0);
+  type = lua_getfield(L, 1, "tool");
+  if (type != LUA_TNIL) {
+    if (auto toolArg = get_tool_from_arg(L, -1)) {
+      tool = toolArg;
+      ink = tool->getInk(0);
+    }
+    else
+      return luaL_error(L, "invalid tool specified in app.useTool() function");
+  }
+  lua_pop(L, 1);
+
+  // Default color is the active fgColor
+  app::Color color = Preferences::instance().colorBar.fgColor();
+  type = lua_getfield(L, 1, "color");
+  if (type != LUA_TNIL)
+    color = convert_args_into_color(L, -1);
+  lua_pop(L, 1);
+
+  // Default brush is the active brush in the context bar
+  BrushRef brush(nullptr);
+#ifdef ENABLE_UI
+  if (App::instance()->isGui() &&
+      App::instance()->contextBar())
+    brush = App::instance()->contextBar()->activeBrush(tool, ink);
+#endif
+  type = lua_getfield(L, 1, "brush");
+  if (type != LUA_TNIL)
+    brush = get_brush_from_arg(L, -1);
+  lua_pop(L, 1);
+  if (!brush)
+    brush.reset(new Brush(BrushType::kCircleBrushType, 1, 0));
+
+  // Do the tool loop
+  type = lua_getfield(L, 1, "points");
+  if (type == LUA_TTABLE) {
+    std::unique_ptr<tools::ToolLoop> loop(
+      create_tool_loop_for_script(ctx, site, tool, ink, color, brush));
+    if (!loop)
+      return luaL_error(L, "cannot draw in the active site");
+
+    tools::ToolLoopManager manager(loop.get());
+    tools::Pointer lastPointer;
+    bool first = true;
+
+    lua_pushnil(L);
+    while (lua_next(L, -2) != 0) {
+      gfx::Point pt = convert_args_into_point(L, -1);
+
+      tools::Pointer pointer(pt, tools::Pointer::Button::Left);
+      if (first) {
+        first = false;
+        manager.prepareLoop(pointer);
+        manager.pressButton(pointer);
+      }
+      else {
+        manager.movement(pointer);
+      }
+      lastPointer = pointer;
+      lua_pop(L, 1);
+    }
+    if (!first)
+      manager.releaseButton(lastPointer);
+
+    loop->commitOrRollback();
+  }
+  lua_pop(L, 1);
   return 0;
 }
 
@@ -329,7 +490,9 @@ int App_get_isUIAvailable(lua_State* L)
 
 int App_get_version(lua_State* L)
 {
-  lua_pushstring(L, VERSION);
+  std::string ver = VERSION;
+  base::replace_string(ver, "-x64", ""); // Remove "-x64" suffix
+  push_version(L, base::Version(ver));
   return 1;
 }
 
@@ -339,9 +502,40 @@ int App_get_apiVersion(lua_State* L)
   return 1;
 }
 
+int App_get_activeTool(lua_State* L)
+{
+  tools::Tool* tool = App::instance()->activeToolManager()->activeTool();
+  push_tool(L, tool);
+  return 1;
+}
+
+int App_get_activeBrush(lua_State* L)
+{
+#if ENABLE_UI
+  App* app = App::instance();
+  if (app->isGui()) {
+    doc::BrushRef brush = app->contextBar()->activeBrush();
+    push_brush(L, brush);
+    return 1;
+  }
+#endif
+  push_brush(L, doc::BrushRef(new doc::Brush()));
+  return 1;
+}
+
+int App_get_defaultPalette(lua_State* L)
+{
+  const Palette* pal = get_default_palette();
+  if (pal)
+    push_palette(L, new Palette(*pal));
+  else
+    lua_pushnil(L);
+  return 1;
+}
+
 int App_set_activeSprite(lua_State* L)
 {
-  auto sprite = get_docobj<Sprite>(L, 1);
+  auto sprite = get_docobj<Sprite>(L, 2);
   app::Context* ctx = App::instance()->context();
   doc::Document* doc = sprite->document();
   ctx->setActiveDocument(static_cast<Doc*>(doc));
@@ -351,53 +545,25 @@ int App_set_activeSprite(lua_State* L)
 int App_set_activeLayer(lua_State* L)
 {
   auto layer = get_docobj<Layer>(L, 2);
-#ifdef ENABLE_UI
   app::Context* ctx = App::instance()->context();
-  if (auto uiCtx = dynamic_cast<UIContext*>(ctx)) {
-    DocView* docView = uiCtx->activeView();
-    if (docView) {
-      Editor* editor = docView->editor();
-      if (editor)
-        editor->setLayer(static_cast<LayerImage*>(layer));
-    }
-  }
-#endif
+  ctx->setActiveLayer(layer);
   return 0;
 }
 
 int App_set_activeFrame(lua_State* L)
 {
   const doc::frame_t frame = get_frame_number_from_arg(L, 2);
-#ifdef ENABLE_UI
   app::Context* ctx = App::instance()->context();
-  if (auto uiCtx = dynamic_cast<UIContext*>(ctx)) {
-    DocView* docView = uiCtx->activeView();
-    if (docView) {
-      Editor* editor = docView->editor();
-      if (editor)
-        editor->setFrame(frame);
-    }
-  }
-#endif
+  ctx->setActiveFrame(frame);
   return 0;
 }
 
 int App_set_activeCel(lua_State* L)
 {
   const auto cel = get_docobj<Cel>(L, 2);
-#ifdef ENABLE_UI
   app::Context* ctx = App::instance()->context();
-  if (auto uiCtx = dynamic_cast<UIContext*>(ctx)) {
-    DocView* docView = uiCtx->activeView();
-    if (docView) {
-      Editor* editor = docView->editor();
-      if (editor) {
-        editor->setLayer(static_cast<LayerImage*>(cel->layer()));
-        editor->setFrame(cel->frame());
-      }
-    }
-  }
-#endif
+  ctx->setActiveLayer(cel->layer());
+  ctx->setActiveFrame(cel->frame());
   return 0;
 }
 
@@ -406,19 +572,36 @@ int App_set_activeImage(lua_State* L)
   const auto cel = get_image_cel_from_arg(L, 2);
   if (!cel)
     return 0;
-#ifdef ENABLE_UI
+
   app::Context* ctx = App::instance()->context();
-  if (auto uiCtx = dynamic_cast<UIContext*>(ctx)) {
-    DocView* docView = uiCtx->activeView();
-    if (docView) {
-      Editor* editor = docView->editor();
-      if (editor) {
-        editor->setLayer(static_cast<LayerImage*>(cel->layer()));
-        editor->setFrame(cel->frame());
-      }
-    }
+  ctx->setActiveLayer(cel->layer());
+  ctx->setActiveFrame(cel->frame());
+  return 0;
+}
+
+int App_set_activeTool(lua_State* L)
+{
+  if (auto tool = get_tool_from_arg(L, 2))
+    App::instance()->activeToolManager()->setSelectedTool(tool);
+  return 0;
+}
+
+int App_set_activeBrush(lua_State* L)
+{
+#if ENABLE_UI
+  if (auto brush = get_brush_from_arg(L, 2)) {
+    App* app = App::instance();
+    if (app->isGui())
+      app->contextBar()->setActiveBrush(brush);
   }
 #endif
+  return 0;
+}
+
+int App_set_defaultPalette(lua_State* L)
+{
+  if (const doc::Palette* pal = get_palette_from_arg(L, 2))
+    set_default_palette(pal);
   return 0;
 }
 
@@ -430,6 +613,7 @@ const luaL_Reg App_methods[] = {
   { "redo",        App_redo },
   { "alert",       App_alert },
   { "refresh",     App_refresh },
+  { "useTool",     App_useTool },
   { nullptr,       nullptr }
 };
 
@@ -440,6 +624,8 @@ const Property App_properties[] = {
   { "activeCel", App_get_activeCel, App_set_activeCel },
   { "activeImage", App_get_activeImage, App_set_activeImage },
   { "activeTag", App_get_activeTag, nullptr },
+  { "activeTool", App_get_activeTool, App_set_activeTool },
+  { "activeBrush", App_get_activeBrush, App_set_activeBrush },
   { "sprites", App_get_sprites, nullptr },
   { "fgColor", App_get_fgColor, App_set_fgColor },
   { "bgColor", App_get_bgColor, App_set_bgColor },
@@ -448,6 +634,7 @@ const Property App_properties[] = {
   { "site", App_get_site, nullptr },
   { "range", App_get_range, nullptr },
   { "isUIAvailable", App_get_isUIAvailable, nullptr },
+  { "defaultPalette", App_get_defaultPalette, App_set_defaultPalette },
   { nullptr, nullptr, nullptr }
 };
 

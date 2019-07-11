@@ -15,6 +15,7 @@
 
 #include "app/color.h"
 #include "app/commands/params.h"
+#include "doc/brush.h"
 #include "doc/frame.h"
 #include "doc/object_ids.h"
 #include "gfx/fwd.h"
@@ -25,6 +26,10 @@
 
 struct lua_State;
 
+namespace base {
+  class Version;
+}
+
 namespace gfx {
   class ColorSpace;
 }
@@ -34,9 +39,14 @@ namespace doc {
   class FrameTag;
   class Image;
   class Layer;
+  class Mask;
   class Palette;
   class Sprite;
   class WithUserData;
+}
+
+namespace tools {
+  class Tool;
 }
 
 namespace app {
@@ -103,14 +113,17 @@ namespace app {
   };
 
   int push_image_iterator_function(lua_State* L, const doc::Image* image, int extraArgIndex);
+  void push_brush(lua_State* L, const doc::BrushRef& brush);
   void push_cel_image(lua_State* L, doc::Cel* cel);
   void push_cels(lua_State* L, const doc::ObjectIds& cels);
   void push_cels(lua_State* L, doc::Layer* layer);
   void push_cels(lua_State* L, doc::Sprite* sprite);
   void push_color_space(lua_State* L, const gfx::ColorSpace& cs);
   void push_doc_range(lua_State* L, Site& site, const DocRange& docRange);
+  void push_image(lua_State* L, doc::Image* image);
   void push_images(lua_State* L, const doc::ObjectIds& images);
   void push_layers(lua_State* L, const doc::ObjectIds& layers);
+  void push_palette(lua_State* L, doc::Palette* palette);
   void push_sprite_cel(lua_State* L, doc::Cel* cel);
   void push_sprite_frame(lua_State* L, doc::Sprite* sprite, doc::frame_t frame);
   void push_sprite_frames(lua_State* L, doc::Sprite* sprite);
@@ -122,7 +135,9 @@ namespace app {
   void push_sprite_slices(lua_State* L, doc::Sprite* sprite);
   void push_sprite_tags(lua_State* L, doc::Sprite* sprite);
   void push_sprites(lua_State* L);
+  void push_tool(lua_State* L, tools::Tool* tool);
   void push_userdata(lua_State* L, doc::WithUserData* userData);
+  void push_version(lua_State* L, const base::Version& ver);
 
   gfx::Point convert_args_into_point(lua_State* L, int index);
   gfx::Rect convert_args_into_rect(lua_State* L, int index);
@@ -134,6 +149,15 @@ namespace app {
   doc::Image* get_image_from_arg(lua_State* L, int index);
   doc::Cel* get_image_cel_from_arg(lua_State* L, int index);
   doc::frame_t get_frame_number_from_arg(lua_State* L, int index);
+  const doc::Mask* get_mask_from_arg(lua_State* L, int index);
+  tools::Tool* get_tool_from_arg(lua_State* L, int index);
+  doc::BrushRef get_brush_from_arg(lua_State* L, int index);
+
+  // Used by App.open(), Sprite{ fromFile }, and Image{ fromFile }
+  enum class LoadSpriteFromFileParam { FullAniAsSprite,
+                                       OneFrameAsImage };
+  int load_sprite_from_file(lua_State* L, const char* filename,
+                            const LoadSpriteFromFileParam param);
 
 } // namespace script
 } // namespace app

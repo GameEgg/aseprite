@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019 Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -112,9 +113,12 @@ void NewBrushCommand::onQuickboxEnd(Editor* editor, const gfx::Rect& rect, ui::M
     try {
       ContextWriter writer(UIContext::instance(), 250);
       if (writer.cel()) {
-        Tx tx(writer.context(), "Clear");
-        tx(new cmd::ClearRect(writer.cel(), rect));
-        tx.commit();
+        gfx::Rect canvasRect = (rect & writer.cel()->bounds());
+        if (!canvasRect.isEmpty()) {
+          Tx tx(writer.context(), "Clear");
+          tx(new cmd::ClearRect(writer.cel(), canvasRect));
+          tx.commit();
+        }
       }
     }
     catch (const std::exception& ex) {
@@ -137,7 +141,8 @@ void NewBrushCommand::onQuickboxCancel(Editor* editor)
 
 void NewBrushCommand::createBrush(const Site& site, const Mask* mask)
 {
-  doc::ImageRef image(new_image_from_mask(site, mask));
+  doc::ImageRef image(new_image_from_mask(site, mask,
+                                          Preferences::instance().experimental.newBlend()));
   if (!image)
     return;
 

@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -18,6 +18,7 @@
 #include "base/string.h"
 #include "dio/detect_format.h"
 #include "doc/cel.h"
+#include "doc/file/act_file.h"
 #include "doc/file/col_file.h"
 #include "doc/file/gpl_file.h"
 #include "doc/file/hex_file.h"
@@ -33,7 +34,7 @@ namespace app {
 
 using namespace doc;
 
-static const char* palExts[] = { "col", "gpl", "hex", "pal" };
+static const char* palExts[] = { "act", "col", "gpl", "hex", "pal" };
 
 base::paths get_readable_palette_extensions()
 {
@@ -51,12 +52,17 @@ base::paths get_writable_palette_extensions()
   return paths;
 }
 
-Palette* load_palette(const char* filename)
+Palette* load_palette(const char* filename,
+                      const FileOpConfig* config)
 {
   dio::FileFormat dioFormat = dio::detect_format(filename);
   Palette* pal = nullptr;
 
   switch (dioFormat) {
+
+    case dio::FileFormat::ACT_PALETTE:
+      pal = doc::file::load_act_file(filename);
+      break;
 
     case dio::FileFormat::COL_PALETTE:
       pal = doc::file::load_col_file(filename);
@@ -82,8 +88,10 @@ Palette* load_palette(const char* filename)
       std::unique_ptr<FileOp> fop(
         FileOp::createLoadDocumentOperation(
           nullptr, filename,
+          FILE_LOAD_CREATE_PALETTE |
           FILE_LOAD_SEQUENCE_NONE |
-          FILE_LOAD_ONE_FRAME));
+          FILE_LOAD_ONE_FRAME,
+          config));
 
       if (fop && !fop->hasError()) {
         fop->operate(nullptr);
@@ -115,6 +123,10 @@ bool save_palette(const char* filename, const Palette* pal, int columns)
   bool success = false;
 
   switch (dioFormat) {
+
+    case dio::FileFormat::ACT_PALETTE:
+      success = doc::file::save_act_file(pal, filename);
+      break;
 
     case dio::FileFormat::COL_PALETTE:
       success = doc::file::save_col_file(pal, filename);

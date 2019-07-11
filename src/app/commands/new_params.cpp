@@ -11,10 +11,14 @@
 #include "app/commands/new_params.h"
 
 #include "app/doc_exporter.h"
-#include "app/script/luacpp.h"
 #include "app/sprite_sheet_type.h"
 #include "base/convert_to.h"
 #include "base/string.h"
+#include "doc/color_mode.h"
+
+#ifdef ENABLE_SCRIPTING
+#include "app/script/luacpp.h"
+#endif
 
 namespace app {
 
@@ -65,6 +69,20 @@ void Param<app::DocExporter::DataFormat>::fromString(const std::string& value)
     setValue(app::DocExporter::JsonHashDataFormat);
 }
 
+template<>
+void Param<doc::ColorMode>::fromString(const std::string& value)
+{
+  if (base::utf8_icmp(value, "rgb") == 0)
+    setValue(doc::ColorMode::RGB);
+  else if (base::utf8_icmp(value, "gray") == 0 ||
+           base::utf8_icmp(value, "grayscale") == 0)
+    setValue(doc::ColorMode::GRAYSCALE);
+  else if (base::utf8_icmp(value, "indexed") == 0)
+    setValue(doc::ColorMode::INDEXED);
+  else
+    setValue(doc::ColorMode::RGB);
+}
+
 #ifdef ENABLE_SCRIPTING
 
 template<>
@@ -106,17 +124,13 @@ void Param<app::DocExporter::DataFormat>::fromLua(lua_State* L, int index)
     setValue((app::DocExporter::DataFormat)lua_tointeger(L, index));
 }
 
-void CommandWithNewParamsBase::onLoadParams(const Params& params)
+template<>
+void Param<doc::ColorMode>::fromLua(lua_State* L, int index)
 {
-  if (m_skipLoadParams) {
-    m_skipLoadParams = false;
-    return;
-  }
-  onResetValues();
-  for (const auto& pair : params) {
-    if (ParamBase* p = onGetParam(pair.first))
-      p->fromString(pair.second);
-  }
+  if (lua_type(L, index) == LUA_TSTRING)
+    fromString(lua_tostring(L, index));
+  else
+    setValue((doc::ColorMode)lua_tointeger(L, index));
 }
 
 void CommandWithNewParamsBase::loadParamsFromLuaTable(lua_State* L, int index)
@@ -136,5 +150,20 @@ void CommandWithNewParamsBase::loadParamsFromLuaTable(lua_State* L, int index)
 }
 
 #endif
+
+void CommandWithNewParamsBase::onLoadParams(const Params& params)
+{
+#ifdef ENABLE_SCRIPTING
+  if (m_skipLoadParams) {
+    m_skipLoadParams = false;
+    return;
+  }
+#endif
+  onResetValues();
+  for (const auto& pair : params) {
+    if (ParamBase* p = onGetParam(pair.first))
+      p->fromString(pair.second);
+  }
+}
 
 } // namespace app

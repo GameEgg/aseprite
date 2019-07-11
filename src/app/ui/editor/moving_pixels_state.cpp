@@ -18,6 +18,7 @@
 #include "app/commands/cmd_rotate.h"
 #include "app/commands/command.h"
 #include "app/commands/commands.h"
+#include "app/commands/move_thing.h"
 #include "app/console.h"
 #include "app/modules/gui.h"
 #include "app/pref/preferences.h"
@@ -138,6 +139,11 @@ void MovingPixelsState::rotate(double angle)
 void MovingPixelsState::flip(doc::algorithm::FlipType flipType)
 {
   m_pixelsMovement->flipImage(flipType);
+}
+
+void MovingPixelsState::shift(int dx, int dy)
+{
+  m_pixelsMovement->shift(dx, dy);
 }
 
 void MovingPixelsState::onEnterState(Editor* editor)
@@ -430,7 +436,7 @@ bool MovingPixelsState::onKeyDown(Editor* editor, KeyMessage* msg)
     // The escape key drop pixels and deselect the mask.
     if (msg->scancode() == kKeyEsc) { // TODO make this key customizable
       Command* cmd = Commands::instance()->byId(CommandId::DeselectMask());
-      UIContext::instance()->executeCommand(cmd);
+      UIContext::instance()->executeCommandFromMenuOrShortcut(cmd);
     }
 
     return true;
@@ -463,7 +469,7 @@ bool MovingPixelsState::onUpdateStatusBar(Editor* editor)
   int h = int(transform.bounds().h);
   int gcd = base::gcd(w, h);
   StatusBar::instance()->setStatusText
-    (100, ":pos: %d %d :size: %3d %3d :selsize: %d %d [%.02f%% %.02f%%] :angle: %.1f :aspect_ratio: %2d : %2d",
+    (100, ":pos: %d %d :size: %3d %3d :selsize: %d %d [%.02f%% %.02f%%] :angle: %.1f :aspect_ratio: %d:%d",
      int(transform.bounds().x),
      int(transform.bounds().y),
      imageSize.w,
@@ -501,9 +507,18 @@ void MovingPixelsState::onBeforeCommandExecution(CommandExecutionEvent& ev)
     return;
 
   // We don't need to drop the pixels if a MoveMaskCommand of Content is executed.
-  if (MoveMaskCommand* moveMaskCmd = dynamic_cast<MoveMaskCommand*>(ev.command())) {
+  if (MoveMaskCommand* moveMaskCmd = dynamic_cast<MoveMaskCommand*>(command)) {
     if (moveMaskCmd->getTarget() == MoveMaskCommand::Content) {
-      // Do not drop pixels
+      gfx::Point delta = moveMaskCmd->getMoveThing().getDelta(UIContext::instance());
+      // Verify Shift condition of the MoveMaskCommand (i.e. wrap = true)
+      if (moveMaskCmd->isWrap()) {
+        m_pixelsMovement->shift(delta.x, delta.y);
+      }
+      else {
+        translate(delta);
+      }
+      // We've processed the selection content movement right here.
+      ev.cancel();
       return;
     }
   }

@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -14,6 +14,7 @@
 #include "app/file/file_format.h"
 #include "app/file/format_options.h"
 #include "app/modules/palettes.h"
+#include "app/pref/preferences.h"
 #include "base/file_handle.h"
 #include "doc/doc.h"
 #include "flic/flic.h"
@@ -137,8 +138,7 @@ bool FliFormat::onLoad(FileOp* fop)
       ++frame_out;
     }
     else if (palChange) {
-      Cel* cel = Cel::createLink(prevCel);
-      cel->setFrame(frame_out);
+      Cel* cel = Cel::MakeLink(frame_out, prevCel);
       layer->addCel(cel);
 
       ++frame_out;
@@ -217,6 +217,7 @@ bool FliFormat::onSave(FileOp* fop)
   // Create the bitmaps
   ImageRef bmp(Image::create(IMAGE_INDEXED, sprite->width(), sprite->height()));
   render::Render render;
+  render.setNewBlend(fop->newBlend());
 
   // Write frame by frame
   flic::Frame fliFrame;

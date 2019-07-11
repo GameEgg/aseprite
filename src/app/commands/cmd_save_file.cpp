@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -115,8 +116,7 @@ void SaveFileBaseCommand::onLoadParams(const Params& params)
   std::string useUI = params.get("useUI");
   m_useUI = (useUI.empty() || (useUI == "true"));
 
-  std::string ignoreEmpty = params.get("ignoreEmpty");
-  m_ignoreEmpty = (ignoreEmpty == "true");
+  m_ignoreEmpty = params.get_as<bool>("ignoreEmpty");
 }
 
 // Returns true if there is a current sprite to save.
@@ -135,6 +135,13 @@ std::string SaveFileBaseCommand::saveAsDialog(
   const std::string& forbiddenFilename)
 {
   Doc* document = context->activeDocument();
+
+  // Before we change the document filename to the copy, we save its
+  // preferences so in a future export operation the values persist,
+  // and we can re-export the original document with the same
+  // preferences.
+  Preferences::instance().save();
+
   std::string filename;
 
   if (!m_filename.empty()) {
@@ -168,6 +175,27 @@ std::string SaveFileBaseCommand::saveAsDialog(
     saveDocumentInBackground(
       context, document,
       filename, markAsSaved);
+
+    // Reset the "saveCopy" document preferences of the new document
+    // (here "document" contains the new filename), because these
+    // preferences make sense only for the original document that was
+    // exported/copied, not for the new one.
+    //
+    // The new document (the copy) must have the default preferences
+    // just in case the user want to export it to other file (so a
+    // proper default export filename is calculated). This scenario is
+    // described here:
+    //
+    //   https://github.com/aseprite/aseprite/issues/1964
+    //
+    auto& docPref = Preferences::instance().document(document);
+    docPref.saveCopy.filename(docPref.saveCopy.filename.defaultValue());
+    docPref.saveCopy.aniDir(docPref.saveCopy.aniDir.defaultValue());
+    docPref.saveCopy.applyPixelRatio(docPref.saveCopy.applyPixelRatio.defaultValue());
+    docPref.saveCopy.frameTag(docPref.saveCopy.frameTag.defaultValue());
+    docPref.saveCopy.layer(docPref.saveCopy.layer.defaultValue());
+    docPref.saveCopy.forTwitter(docPref.saveCopy.forTwitter.defaultValue());
+    docPref.saveCopy.resizeScale(docPref.saveCopy.resizeScale.defaultValue());
   }
 
   return filename;

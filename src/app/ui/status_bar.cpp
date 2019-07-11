@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -36,10 +36,12 @@
 #include "app/ui_context.h"
 #include "app/util/range_utils.h"
 #include "base/bind.h"
+#include "base/fs.h"
 #include "base/string.h"
 #include "doc/image.h"
 #include "doc/layer.h"
 #include "doc/sprite.h"
+#include "fmt/format.h"
 #include "gfx/size.h"
 #include "os/font.h"
 #include "os/surface.h"
@@ -515,7 +517,7 @@ public:
           Command* cmd = Commands::instance()->byId(CommandId::GotoFrame());
           Params params;
           params.set("frame", text().c_str());
-          UIContext::instance()->executeCommand(cmd, params);
+          UIContext::instance()->executeCommandFromMenuOrShortcut(cmd, params);
 
           // Select the text again
           selectAllText();
@@ -542,7 +544,6 @@ StatusBar::StatusBar(TooltipManager* tooltipManager)
   : m_timeout(0)
   , m_indicators(new Indicators)
   , m_docControls(new HBox)
-  , m_doc(nullptr)
   , m_tipwindow(nullptr)
   , m_snapToGridWindow(nullptr)
 {
@@ -586,8 +587,6 @@ StatusBar::StatusBar(TooltipManager* tooltipManager)
   tooltipManager->addTooltipFor(m_zoomEntry, "Zoom Level", BOTTOM);
   tooltipManager->addTooltipFor(m_newFrame, "New Frame", BOTTOM);
 
-  UIContext::instance()->add_observer(this);
-  UIContext::instance()->documents().add_observer(this);
   App::instance()->activeToolManager()->add_observer(this);
 
   initTheme();
@@ -596,8 +595,6 @@ StatusBar::StatusBar(TooltipManager* tooltipManager)
 StatusBar::~StatusBar()
 {
   App::instance()->activeToolManager()->remove_observer(this);
-  UIContext::instance()->documents().remove_observer(this);
-  UIContext::instance()->remove_observer(this);
 
   delete m_tipwindow;           // widget
   delete m_snapToGridWindow;
@@ -614,24 +611,41 @@ void StatusBar::clearText()
   setStatusText(1, "");
 }
 
+// TODO Workspace views should have a method to set the default status
+//      bar text, because here the StatusBar is depending on too many
+//      details of the main window/docs/etc.
 void StatusBar::showDefaultText()
 {
-  showDefaultText(current_editor ? current_editor->document(): nullptr);
+  if (current_editor) {
+    showDefaultText(current_editor->document());
+  }
+  else if (App::instance()->mainWindow()->isHomeSelected()) {
+    setStatusText(0, "-- %s %s by David & Gaspar Capello -- Igara Studio --",
+                  PACKAGE, VERSION);
+  }
+  else {
+    clearText();
+  }
 }
 
 void StatusBar::showDefaultText(Doc* doc)
 {
   clearText();
-  if (doc){
-    std::string buf = base::string_printf("%s  :size: %d %d",
-                                          doc->name().c_str(),
-                                          doc->width(),
-                                          doc->height());
+  if (doc) {
+    std::string buf =
+      fmt::format("{}  :size: {} {}",
+                  doc->name(), doc->width(), doc->height());
     if (doc->getTransformation().bounds().w != 0) {
-      buf += base::string_printf(" :selsize: %d %d",
-                                 int(doc->getTransformation().bounds().w),
-                                 int(doc->getTransformation().bounds().h));
+      buf += fmt::format(" :selsize: {} {}",
+                         int(doc->getTransformation().bounds().w),
+                         int(doc->getTransformation().bounds().h));
     }
+    if (Preferences::instance().general.showFullPath()) {
+      std::string path = base::get_file_path(doc->filename());
+      if (!path.empty())
+        buf += fmt::format("  ({})", path);
+    }
+
     setStatusText(1, buf.c_str());
   }
 }
@@ -719,9 +733,10 @@ void StatusBar::showTool(int msecs, tools::Tool* tool)
 void StatusBar::showSnapToGridWarning(bool state)
 {
   if (state) {
-    // m_doc can be null if "snap to grid" command is pressed without
-    // an opened document. (E.g. to change the default setting)
-    if (!m_doc)
+    // this->doc() can be nullptr if "snap to grid" command is pressed
+    // without an opened document. (E.g. to change the default
+    // setting)
+    if (!doc())
       return;
 
     if (!m_snapToGridWindow)
@@ -733,7 +748,7 @@ void StatusBar::showSnapToGridWarning(bool state)
       updateSnapToGridWindowPosition();
     }
 
-    m_snapToGridWindow->setDocument(m_doc);
+    m_snapToGridWindow->setDocument(doc());
   }
   else {
     if (m_snapToGridWindow)
@@ -768,7 +783,7 @@ void StatusBar::onInitTheme(ui::InitThemeEvent& ev)
 void StatusBar::onResize(ResizeEvent& ev)
 {
   Rect rc = ev.bounds();
-  m_docControls->setVisible(m_doc && rc.w > 300*ui::guiscale());
+  m_docControls->setVisible(doc() && rc.w > 300*ui::guiscale());
 
   HBox::onResize(ev);
 
@@ -779,21 +794,10 @@ void StatusBar::onResize(ResizeEvent& ev)
 
 void StatusBar::onActiveSiteChange(const Site& site)
 {
-  if (m_doc && site.document() != m_doc) {
-    m_doc->remove_observer(this);
-    m_doc = nullptr;
-  }
+  DocObserverWidget<ui::HBox>::onActiveSiteChange(site);
 
-  if (site.document() && site.sprite()) {
-    if (!m_doc) {
-      m_doc = const_cast<Doc*>(site.document());
-      m_doc->add_observer(this);
-    }
-    else {
-      ASSERT(m_doc == site.document());
-    }
-
-    auto& docPref = Preferences::instance().document(m_doc);
+  if (doc()) {
+    auto& docPref = Preferences::instance().document(doc());
 
     m_docControls->setVisible(true);
     showSnapToGridWarning(docPref.grid.snap());
@@ -801,22 +805,16 @@ void StatusBar::onActiveSiteChange(const Site& site)
     // Current frame
     m_currentFrame->setTextf(
       "%d", site.frame()+docPref.timeline.firstFrame());
+
+    // Zoom level
+    if (current_editor)
+      updateFromEditor(current_editor);
   }
   else {
-    ASSERT(m_doc == nullptr);
     m_docControls->setVisible(false);
     showSnapToGridWarning(false);
   }
   layout();
-}
-
-void StatusBar::onRemoveDocument(Doc* doc)
-{
-  if (m_doc &&
-      m_doc == doc) {
-    m_doc->remove_observer(this);
-    m_doc = nullptr;
-  }
 }
 
 void StatusBar::onPixelFormatChanged(DocEvent& ev)
@@ -834,7 +832,7 @@ void StatusBar::onPixelFormatChanged(DocEvent& ev)
 void StatusBar::newFrame()
 {
   Command* cmd = Commands::instance()->byId(CommandId::NewFrame());
-  UIContext::instance()->executeCommand(cmd);
+  UIContext::instance()->executeCommandFromMenuOrShortcut(cmd);
 }
 
 void StatusBar::onChangeZoom(const render::Zoom& zoom)

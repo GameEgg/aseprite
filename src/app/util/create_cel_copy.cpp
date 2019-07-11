@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -15,6 +16,7 @@
 #include "doc/palette.h"
 #include "doc/primitives.h"
 #include "doc/sprite.h"
+#include "render/dithering.h"
 #include "render/ordered_dither.h"
 #include "render/quantization.h"
 #include "render/render.h"
@@ -53,8 +55,7 @@ Cel* create_cel_copy(const Cel* srcCel,
       celImage,
       tmpImage.get(),
       IMAGE_RGB,
-      render::DitheringAlgorithm::None,
-      render::DitheringMatrix(),
+      render::Dithering(),
       srcCel->sprite()->rgbMap(srcCel->frame()),
       srcCel->sprite()->palette(srcCel->frame()),
       srcCel->layer()->isBackground(),
@@ -64,8 +65,7 @@ Cel* create_cel_copy(const Cel* srcCel,
       tmpImage.get(),
       dstCel->image(),
       IMAGE_INDEXED,
-      render::DitheringAlgorithm::None,
-      render::DitheringMatrix(),
+      render::Dithering(),
       dstSprite->rgbMap(dstFrame),
       dstSprite->palette(dstFrame),
       srcCel->layer()->isBackground(),

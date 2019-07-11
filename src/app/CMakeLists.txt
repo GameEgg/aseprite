@@ -150,6 +150,7 @@ if(ENABLE_SCRIPTING)
     commands/cmd_run_script.cpp
     script/app_command_object.cpp
     script/app_object.cpp
+    script/brush_class.cpp
     script/cel_class.cpp
     script/cels_class.cpp
     script/color_class.cpp
@@ -169,6 +170,7 @@ if(ENABLE_SCRIPTING)
     script/palettes_class.cpp
     script/pixel_color_object.cpp
     script/point_class.cpp
+    script/preferences_object.cpp
     script/range_class.cpp
     script/rectangle_class.cpp
     script/security.cpp
@@ -181,6 +183,9 @@ if(ENABLE_SCRIPTING)
     script/sprites_class.cpp
     script/tag_class.cpp
     script/tags_class.cpp
+    script/tool_class.cpp
+    script/values.cpp
+    script/version_class.cpp
     shell.cpp
     ${scripting_files_ui})
 endif()
@@ -190,6 +195,7 @@ if(ENABLE_UI)
   set(ui_app_files
     app_brushes.cpp
     app_menus.cpp
+    closed_docs.cpp
     commands/cmd_about.cpp
     commands/cmd_add_color.cpp
     commands/cmd_advanced_mode.cpp
@@ -199,6 +205,7 @@ if(ENABLE_UI)
     commands/cmd_change_color.cpp
     commands/cmd_clear.cpp
     commands/cmd_clear_cel.cpp
+    commands/cmd_clear_recent_files.cpp
     commands/cmd_close_file.cpp
     commands/cmd_color_quantization.cpp
     commands/cmd_contiguous_fill.cpp
@@ -237,12 +244,10 @@ if(ENABLE_UI)
     commands/cmd_mask_all.cpp
     commands/cmd_mask_by_color.cpp
     commands/cmd_mask_content.cpp
-    commands/cmd_merge_down_layer.cpp
     commands/cmd_modify_selection.cpp
     commands/cmd_move_cel.cpp
     commands/cmd_move_mask.cpp
     commands/cmd_new_brush.cpp
-    commands/cmd_new_file.cpp
     commands/cmd_new_frame_tag.cpp
     commands/cmd_new_sprite_from_selection.cpp
     commands/cmd_onionskin.cpp
@@ -260,6 +265,7 @@ if(ENABLE_UI)
     commands/cmd_remove_frame.cpp
     commands/cmd_remove_frame_tag.cpp
     commands/cmd_remove_slice.cpp
+    commands/cmd_reopen_closed_file.cpp
     commands/cmd_repeat_last_export.cpp
     commands/cmd_reselect_mask.cpp
     commands/cmd_reverse_frames.cpp
@@ -293,6 +299,7 @@ if(ENABLE_UI)
     commands/filters/cmd_despeckle.cpp
     commands/filters/cmd_hue_saturation.cpp
     commands/filters/cmd_invert_color.cpp
+    commands/filters/cmd_outline.cpp
     commands/filters/cmd_replace_color.cpp
     commands/filters/color_curve_editor.cpp
     commands/filters/convolution_matrix_stock.cpp
@@ -302,20 +309,10 @@ if(ENABLE_UI)
     commands/filters/filter_window.cpp
     commands/filters/filter_worker.cpp
     file_selector.cpp
-    gui_xml.cpp
     modules/editors.cpp
     modules/gfx.cpp
     modules/gui.cpp
     send_crash.cpp
-    tools/active_tool.cpp
-    tools/ink_type.cpp
-    tools/intertwine.cpp
-    tools/pick_ink.cpp
-    tools/point_shape.cpp
-    tools/stroke.cpp
-    tools/symmetries.cpp
-    tools/tool_box.cpp
-    tools/tool_loop_manager.cpp
     ui/app_menuitem.cpp
     ui/backup_indicator.cpp
     ui/browser_view.cpp
@@ -355,7 +352,6 @@ if(ENABLE_UI)
     ui/editor/select_box_state.cpp
     ui/editor/standby_state.cpp
     ui/editor/state_with_wheel_behavior.cpp
-    ui/editor/tool_loop_impl.cpp
     ui/editor/transform_handles.cpp
     ui/editor/zooming_state.cpp
     ui/export_file_window.cpp
@@ -363,6 +359,7 @@ if(ENABLE_UI)
     ui/file_list.cpp
     ui/file_list_view.cpp
     ui/file_selector.cpp
+    ui/filename_field.cpp
     ui/font_popup.cpp
     ui/frame_tag_window.cpp
     ui/hex_color_entry.cpp
@@ -394,6 +391,7 @@ if(ENABLE_UI)
     ui/slider2.cpp
     ui/status_bar.cpp
     ui/tabs.cpp
+    ui/task_widget.cpp
     ui/timeline/ani_controls.cpp
     ui/timeline/timeline.cpp
     ui/toolbar.cpp
@@ -415,6 +413,7 @@ if(ENABLE_UI)
 endif()
 
 add_library(app-lib
+  active_site_handler.cpp
   app.cpp
   check_update.cpp
   cli/app_options.cpp
@@ -513,6 +512,8 @@ add_library(app-lib
   commands/cmd_flatten_layers.cpp
   commands/cmd_layer_from_background.cpp
   commands/cmd_load_palette.cpp
+  commands/cmd_merge_down_layer.cpp
+  commands/cmd_new_file.cpp
   commands/cmd_new_frame.cpp
   commands/cmd_new_layer.cpp
   commands/cmd_open_file.cpp
@@ -543,12 +544,14 @@ add_library(app-lib
   file/file_data.cpp
   file/file_format.cpp
   file/file_formats_manager.cpp
+  file/file_op_config.cpp
   file/palette_file.cpp
   file/split_filename.cpp
   file_system.cpp
   filename_formatter.cpp
   flatten.cpp
   font_path.cpp
+  gui_xml.cpp
   i18n/strings.cpp
   i18n/xml_translator.cpp
   ini_file.cpp
@@ -560,7 +563,6 @@ add_library(app-lib
   modules.cpp
   modules/palettes.cpp
   pref/preferences.cpp
-  project.cpp
   recent_files.cpp
   res/palettes_loader_delegate.cpp
   res/resources_loader.cpp
@@ -570,12 +572,24 @@ add_library(app-lib
   site.cpp
   snap_to_grid.cpp
   sprite_job.cpp
+  task.cpp
   thumbnail_generator.cpp
   thumbnails.cpp
+  tools/active_tool.cpp
+  tools/ink_type.cpp
+  tools/intertwine.cpp
+  tools/pick_ink.cpp
+  tools/point_shape.cpp
+  tools/stroke.cpp
+  tools/symmetries.cpp
+  tools/tool_box.cpp
+  tools/tool_loop_manager.cpp
   transaction.cpp
   transformation.cpp
+  ui/editor/tool_loop_impl.cpp
   ui/layer_frame_comboboxes.cpp
   util/autocrop.cpp
+  util/buffer_region.cpp
   util/create_cel_copy.cpp
   util/expand_cel_canvas.cpp
   util/filetoks.cpp

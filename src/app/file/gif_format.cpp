@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -24,6 +24,7 @@
 #include "base/file_handle.h"
 #include "base/fs.h"
 #include "doc/doc.h"
+#include "render/dithering.h"
 #include "render/ordered_dither.h"
 #include "render/quantization.h"
 #include "render/render.h"
@@ -46,6 +47,8 @@
 #define GifFreeMapObject FreeMapObject
 #define GifBitSize       BitSize
 #endif
+
+#define GIF_TRACE(...)
 
 // GifBitSize can return 9 (it's a bug in giflib)
 #define GifBitSizeLimited(v) (MIN(GifBitSize(v), 8))
@@ -216,10 +219,10 @@ public:
     , m_remap(256)
     , m_hasLocalColormaps(false)
     , m_firstLocalColormap(nullptr) {
-    TRACE("GIF: background index=%d\n", (int)m_gifFile->SBackGroundColor);
-    TRACE("GIF: global colormap=%d, ncolors=%d\n",
-          (m_gifFile->SColorMap ? 1: 0),
-          (m_gifFile->SColorMap ? m_gifFile->SColorMap->ColorCount: 0));
+    GIF_TRACE("GIF: background index=%d\n", (int)m_gifFile->SBackGroundColor);
+    GIF_TRACE("GIF: global colormap=%d, ncolors=%d\n",
+              (m_gifFile->SColorMap ? 1: 0),
+              (m_gifFile->SColorMap ? m_gifFile->SColorMap->ColorCount: 0));
   }
 
   ~GifDecoder() {
@@ -340,7 +343,7 @@ private:
     std::unique_ptr<Image> frameImage(
       readFrameIndexedImage(frameBounds));
 
-    TRACE("GIF: Frame[%d] transparent index = %d\n", (int)m_frameNum, m_localTransparentIndex);
+    GIF_TRACE("GIF: Frame[%d] transparent index = %d\n", (int)m_frameNum, m_localTransparentIndex);
 
     if (m_frameNum == 0) {
       if (m_localTransparentIndex >= 0)
@@ -355,8 +358,8 @@ private:
     // Convert the sprite to RGB if we have more than 256 colors
     if ((m_sprite->pixelFormat() == IMAGE_INDEXED) &&
         (m_sprite->palette(m_frameNum)->size() > 256)) {
-      TRACE("GIF: Converting to RGB because we have %d colors\n",
-            m_sprite->palette(m_frameNum)->size());
+      GIF_TRACE("GIF: Converting to RGB because we have %d colors\n",
+                m_sprite->palette(m_frameNum)->size());
 
       convertIndexedSpriteToRgb();
     }
@@ -474,7 +477,7 @@ private:
     int ncolors = colormap->ColorCount;
     bool isLocalColormap = (m_gifFile->Image.ColorMap ? true: false);
 
-    TRACE("GIF: Local colormap=%d, ncolors=%d\n", isLocalColormap, ncolors);
+    GIF_TRACE("GIF: Local colormap=%d, ncolors=%d\n", isLocalColormap, ncolors);
 
     // We'll calculate the list of used colormap indexes in this
     // frameImage.
@@ -557,17 +560,17 @@ private:
     // Number of colors in the image that aren't in the palette.
     int missing = (usedNColors - found);
 
-    TRACE("GIF: Bg index=%d,\n"
-          "  Local transparent index=%d,\n"
-          "  Need extra index to show bg color=%d,\n  "
-          "  Found colors in palette=%d,\n"
-          "  Used colors in local pixels=%d,\n"
-          "  Base for new colors in palette=%d,\n"
-          "  Colors in the image missing in the palette=%d,\n"
-          "  New palette size=%d\n",
-          m_bgIndex, m_localTransparentIndex, needsExtraBgColor,
-          found, usedNColors, base, missing,
-          base + missing + (needsExtraBgColor ? 1: 0));
+    GIF_TRACE("GIF: Bg index=%d,\n"
+              "  Local transparent index=%d,\n"
+              "  Need extra index to show bg color=%d,\n  "
+              "  Found colors in palette=%d,\n"
+              "  Used colors in local pixels=%d,\n"
+              "  Base for new colors in palette=%d,\n"
+              "  Colors in the image missing in the palette=%d,\n"
+              "  New palette size=%d\n",
+              m_bgIndex, m_localTransparentIndex, needsExtraBgColor,
+              found, usedNColors, base, missing,
+              base + missing + (needsExtraBgColor ? 1: 0));
 
     Palette oldPalette(*palette);
     palette->resize(base + missing + (needsExtraBgColor ? 1: 0));
@@ -694,8 +697,8 @@ private:
         m_localTransparentIndex = (extension[1] & 1) ? extension[4]: -1;
         m_frameDelay            = (extension[3] << 8) | extension[2];
 
-        TRACE("GIF: Disposal method: %d\n  Transparent index: %d\n  Frame delay: %d\n",
-              m_disposalMethod, m_localTransparentIndex, m_frameDelay);
+        GIF_TRACE("GIF: Disposal method: %d\n  Transparent index: %d\n  Frame delay: %d\n",
+                  m_disposalMethod, m_localTransparentIndex, m_frameDelay);
       }
     }
 
@@ -745,8 +748,7 @@ private:
       ImageRef newImage(
         render::convert_pixel_format
         (oldImage, NULL, IMAGE_RGB,
-         render::DitheringAlgorithm::None,
-         render::DitheringMatrix(),
+         render::Dithering(),
          nullptr,
          m_sprite->palette(cel->frame()),
          m_opaque,
@@ -758,8 +760,7 @@ private:
     m_currentImage.reset(
       render::convert_pixel_format
       (m_currentImage.get(), NULL, IMAGE_RGB,
-       render::DitheringAlgorithm::None,
-       render::DitheringMatrix(),
+       render::Dithering(),
        nullptr,
        m_sprite->palette(m_frameNum),
        m_opaque,
@@ -768,8 +769,7 @@ private:
     m_previousImage.reset(
       render::convert_pixel_format
       (m_previousImage.get(), NULL, IMAGE_RGB,
-       render::DitheringAlgorithm::None,
-       render::DitheringMatrix(),
+       render::Dithering(),
        nullptr,
        m_sprite->palette(MAX(0, m_frameNum-1)),
        m_opaque,
@@ -1135,10 +1135,10 @@ private:
         }
       }
 
-      TRACE("GIF: frameBounds=%d %d %d %d  prev=%d %d %d %d  next=%d %d %d %d\n",
-            frameBounds.x, frameBounds.y, frameBounds.w, frameBounds.h,
-            prev.x, prev.y, prev.w, prev.h,
-            next.x, next.y, next.w, next.h);
+      GIF_TRACE("GIF: frameBounds=%d %d %d %d  prev=%d %d %d %d  next=%d %d %d %d\n",
+                frameBounds.x, frameBounds.y, frameBounds.w, frameBounds.h,
+                prev.x, prev.y, prev.w, prev.h,
+                next.x, next.y, next.w, next.h);
     }
   }
 
@@ -1333,6 +1333,8 @@ private:
 
   void renderFrame(frame_t frame, Image* dst) {
     render::Render render;
+    render.setNewBlend(m_fop->newBlend());
+
     render.setBgType(render::BgType::NONE);
     clear_image(dst, m_clearColor);
     render.renderSprite(dst, m_sprite, frame);

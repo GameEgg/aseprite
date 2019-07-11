@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -19,6 +19,7 @@
 #include "app/i18n/strings.h"
 #include "app/ini_file.h"
 #include "app/launcher.h"
+#include "app/modules/gui.h"
 #include "app/pref/preferences.h"
 #include "app/recent_files.h"
 #include "app/resource_finder.h"
@@ -33,24 +34,26 @@
 #include "base/version.h"
 #include "doc/image.h"
 #include "fmt/format.h"
-#include "render/render.h"
 #include "os/display.h"
 #include "os/system.h"
+#include "render/render.h"
 #include "ui/ui.h"
 
 #include "options.xml.h"
 
 namespace app {
 
-static const char* kSectionGeneralId = "section_general";
-static const char* kSectionBgId = "section_bg";
-static const char* kSectionGridId = "section_grid";
-static const char* kSectionThemeId = "section_theme";
-static const char* kSectionExtensionsId = "section_extensions";
+namespace {
 
-static const char* kInfiniteSymbol = "\xE2\x88\x9E"; // Infinite symbol (UTF-8)
+const char* kSectionGeneralId = "section_general";
+const char* kSectionBgId = "section_bg";
+const char* kSectionGridId = "section_grid";
+const char* kSectionThemeId = "section_theme";
+const char* kSectionExtensionsId = "section_extensions";
 
-static app::gen::ColorProfileBehavior filesWithCsMap[] = {
+const char* kInfiniteSymbol = "\xE2\x88\x9E"; // Infinite symbol (UTF-8)
+
+app::gen::ColorProfileBehavior filesWithCsMap[] = {
   app::gen::ColorProfileBehavior::DISABLE,
   app::gen::ColorProfileBehavior::EMBEDDED,
   app::gen::ColorProfileBehavior::CONVERT,
@@ -58,11 +61,13 @@ static app::gen::ColorProfileBehavior filesWithCsMap[] = {
   app::gen::ColorProfileBehavior::ASK,
 };
 
-static app::gen::ColorProfileBehavior missingCsMap[] = {
+app::gen::ColorProfileBehavior missingCsMap[] = {
   app::gen::ColorProfileBehavior::DISABLE,
   app::gen::ColorProfileBehavior::ASSIGN,
   app::gen::ColorProfileBehavior::ASK,
 };
+
+} // anonymous namespace
 
 using namespace ui;
 
@@ -179,6 +184,10 @@ public:
     recentFiles()->setValue(m_pref.general.recentItems());
     clearRecentFiles()->Click.connect(base::Bind<void>(&OptionsWindow::onClearRecentFiles, this));
 
+    // Template item for active display color profiles
+    m_templateTextForDisplayCS = windowCs()->getItem(2)->text();
+    windowCs()->deleteItem(2);
+
     // Color profiles
     resetColorManagement()->Click.connect(base::Bind<void>(&OptionsWindow::onResetColorManagement, this));
     colorManagement()->Click.connect(base::Bind<void>(&OptionsWindow::onColorManagement, this));
@@ -189,6 +198,8 @@ public:
           workingRgbCs()->addItem(new ColorSpaceItem(cs));
       }
       updateColorProfileControls(m_pref.color.manage(),
+                                 m_pref.color.windowProfile(),
+                                 m_pref.color.windowProfileName(),
                                  m_pref.color.workingRgbSpace(),
                                  m_pref.color.filesWithProfile(),
                                  m_pref.color.missingProfile());
@@ -230,6 +241,24 @@ public:
 
     if (m_pref.general.dataRecovery())
       enableDataRecovery()->setSelected(true);
+    enableDataRecovery()->Click.connect(
+      [this](Event&){
+        const bool state = enableDataRecovery()->isSelected();
+        keepEditedSpriteData()->setEnabled(state);
+        keepEditedSpriteData()->setSelected(state);
+        keepEditedSpriteDataFor()->setEnabled(state);
+      });
+
+    if (m_pref.general.dataRecovery() &&
+        m_pref.general.keepEditedSpriteData())
+      keepEditedSpriteData()->setSelected(true);
+    else if (!m_pref.general.dataRecovery()) {
+      keepEditedSpriteData()->setEnabled(false);
+      keepEditedSpriteDataFor()->setEnabled(false);
+    }
+
+    if (m_pref.general.keepClosedSpriteOnMemory())
+      keepClosedSpriteOnMemory()->setSelected(true);
 
     if (m_pref.general.showFullPath())
       showFullPath()->setSelected(true);
@@ -237,6 +266,14 @@ public:
     dataRecoveryPeriod()->setSelectedItemIndex(
       dataRecoveryPeriod()->findItemIndexByValue(
         base::convert_to<std::string>(m_pref.general.dataRecoveryPeriod())));
+
+    keepEditedSpriteDataFor()->setSelectedItemIndex(
+      keepEditedSpriteDataFor()->findItemIndexByValue(
+        base::convert_to<std::string>(m_pref.general.keepEditedSpriteDataFor())));
+
+    keepClosedSpriteOnMemoryFor()->setSelectedItemIndex(
+      keepClosedSpriteOnMemoryFor()->findItemIndexByValue(
+        base::convert_to<std::string>(m_pref.general.keepClosedSpriteOnMemoryFor())));
 
     if (m_pref.editor.zoomFromCenterWithWheel())
       zoomFromCenterWithWheel()->setSelected(true);
@@ -468,6 +505,24 @@ public:
       warnings += "<<- " + Strings::alerts_restart_by_preferences_save_recovery_data_period();
     }
 
+    int newLifespan = base::convert_to<int>(keepEditedSpriteDataFor()->getValue());
+    if (keepEditedSpriteData()->isSelected() != m_pref.general.keepEditedSpriteData() ||
+        newLifespan != m_pref.general.keepEditedSpriteDataFor()) {
+      m_pref.general.keepEditedSpriteData(keepEditedSpriteData()->isSelected());
+      m_pref.general.keepEditedSpriteDataFor(newLifespan);
+
+      warnings += "<<- " + Strings::alerts_restart_by_preferences_keep_edited_sprite_data_lifespan();
+    }
+
+    double newKeepClosed = base::convert_to<double>(keepClosedSpriteOnMemoryFor()->getValue());
+    if (keepClosedSpriteOnMemory()->isSelected() != m_pref.general.keepClosedSpriteOnMemory() ||
+        newKeepClosed != m_pref.general.keepClosedSpriteOnMemoryFor()) {
+      m_pref.general.keepClosedSpriteOnMemory(keepClosedSpriteOnMemory()->isSelected());
+      m_pref.general.keepClosedSpriteOnMemoryFor(newKeepClosed);
+
+      warnings += "<<- " + Strings::alerts_restart_by_preferences_keep_closed_sprite_on_memory_for();
+    }
+
     m_pref.editor.zoomFromCenterWithWheel(zoomFromCenterWithWheel()->isSelected());
     m_pref.editor.zoomFromCenterWithKeys(zoomFromCenterWithKeys()->isSelected());
     m_pref.editor.showScrollbars(showScrollbars()->isSelected());
@@ -497,6 +552,39 @@ public:
       filesWithCsMap[filesWithCs()->getSelectedItemIndex()]);
     m_pref.color.missingProfile(
       missingCsMap[missingCs()->getSelectedItemIndex()]);
+
+    int winCs = windowCs()->getSelectedItemIndex();
+    switch (winCs) {
+      case 0:
+        m_pref.color.windowProfile(gen::WindowColorProfile::MONITOR);
+        break;
+      case 1:
+        m_pref.color.windowProfile(gen::WindowColorProfile::SRGB);
+        break;
+      default: {
+        m_pref.color.windowProfile(gen::WindowColorProfile::SPECIFIC);
+
+        std::string name;
+        int j = 2;
+        for (auto& cs : m_colorSpaces) {
+          // We add ICC profiles only
+          auto gfxCs = cs->gfxColorSpace();
+          if (gfxCs->type() != gfx::ColorSpace::ICC)
+            continue;
+
+          if (j == winCs) {
+            name = gfxCs->name();
+            os::instance()->setDisplaysColorSpace(cs);
+            break;
+          }
+          ++j;
+        }
+
+        m_pref.color.windowProfileName(name);
+        break;
+      }
+    }
+    update_displays_color_profile_from_preferences();
 
     m_curPref->show.grid(gridVisible()->isSelected());
     m_curPref->grid.bounds(gridBounds());
@@ -707,6 +795,8 @@ private:
 
   void onColorManagement() {
     const bool state = colorManagement()->isSelected();
+    windowCsLabel()->setEnabled(state);
+    windowCs()->setEnabled(state);
     workingRgbCsLabel()->setEnabled(state);
     workingRgbCs()->setEnabled(state);
     filesWithCsLabel()->setEnabled(state);
@@ -717,17 +807,53 @@ private:
 
   void onResetColorManagement() {
     updateColorProfileControls(m_pref.color.manage.defaultValue(),
+                               m_pref.color.windowProfile.defaultValue(),
+                               m_pref.color.windowProfileName.defaultValue(),
                                m_pref.color.workingRgbSpace.defaultValue(),
                                m_pref.color.filesWithProfile.defaultValue(),
                                m_pref.color.missingProfile.defaultValue());
   }
 
   void updateColorProfileControls(const bool manage,
+                                  const app::gen::WindowColorProfile& windowProfile,
+                                  const std::string& windowProfileName,
                                   const std::string& workingRgbSpace,
                                   const app::gen::ColorProfileBehavior& filesWithProfile,
                                   const app::gen::ColorProfileBehavior& missingProfile) {
     colorManagement()->setSelected(manage);
 
+    // Window color profile
+    {
+      int i = 0;
+      if (windowProfile == gen::WindowColorProfile::MONITOR)
+        i = 0;
+      else if (windowProfile == gen::WindowColorProfile::SRGB)
+        i = 1;
+
+      // Delete previous added items in the combobox for each display
+      // (we'll re-add them below).
+      while (windowCs()->getItem(2))
+        windowCs()->deleteItem(2);
+
+      int j = 2;
+      for (auto& cs : m_colorSpaces) {
+        // We add ICC profiles only
+        auto gfxCs = cs->gfxColorSpace();
+        if (gfxCs->type() != gfx::ColorSpace::ICC)
+          continue;
+
+        auto name = gfxCs->name();
+        windowCs()->addItem(fmt::format(m_templateTextForDisplayCS, name));
+        if (windowProfile == gen::WindowColorProfile::SPECIFIC &&
+            windowProfileName == name) {
+          i = j;
+        }
+        ++j;
+      }
+      windowCs()->setSelectedItemIndex(i);
+    }
+
+    // Working color profile
     for (auto child : *workingRgbCs()) {
       if (child->text() == workingRgbSpace) {
         workingRgbCs()->setSelectedItem(child);
@@ -898,7 +1024,7 @@ private:
   }
 
   void refillLanguages() {
-    language()->removeAllItems();
+    language()->deleteAllItems();
     loadLanguages();
   }
 
@@ -1273,6 +1399,7 @@ private:
   int m_restoreScreenScaling;
   int m_restoreUIScaling;
   std::vector<os::ColorSpacePtr> m_colorSpaces;
+  std::string m_templateTextForDisplayCS;
 };
 
 class OptionsCommand : public Command {

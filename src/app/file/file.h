@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -9,6 +9,9 @@
 #define APP_FILE_FILE_H_INCLUDED
 #pragma once
 
+#include "app/color.h"
+#include "app/file/file_op_config.h"
+#include "app/pref/preferences.h"
 #include "base/mutex.h"
 #include "base/paths.h"
 #include "base/shared_ptr.h"
@@ -27,6 +30,7 @@
 #define FILE_LOAD_SEQUENCE_YES          0x00000008
 #define FILE_LOAD_ONE_FRAME             0x00000010
 #define FILE_LOAD_DATA_FILE             0x00000020
+#define FILE_LOAD_CREATE_PALETTE        0x00000040
 
 namespace doc {
   class FrameTag;
@@ -100,7 +104,8 @@ namespace app {
   public:
     static FileOp* createLoadDocumentOperation(Context* context,
                                                const std::string& filename,
-                                               int flags);
+                                               const int flags,
+                                               const FileOpConfig* config = nullptr);
 
     static FileOp* createSaveDocumentOperation(const Context* context,
                                                const FileOpROI& roi,
@@ -112,7 +117,7 @@ namespace app {
 
     bool isSequence() const { return !m_seq.filename_list.empty(); }
     bool isOneFrame() const { return m_oneframe; }
-    bool preserveColorProfile() const { return m_preserveColorProfile; }
+    bool preserveColorProfile() const { return m_config.preserveColorProfile; }
 
     const std::string& filename() const { return m_filename; }
     const base::paths& filenames() const { return m_seq.filename_list; }
@@ -173,9 +178,13 @@ namespace app {
     void setEmbeddedColorProfile() { m_embeddedColorProfile = true; }
     bool hasEmbeddedColorProfile() const { return m_embeddedColorProfile; }
 
+    bool newBlend() const { return m_config.newBlend; }
+
   private:
     FileOp();                   // Undefined
-    FileOp(FileOpType type, Context* context);
+    FileOp(FileOpType type,
+           Context* context,
+           const FileOpConfig* config);
 
     FileOpType m_type;          // Operation type: 0=load, 1=save.
     FileFormat* m_format;
@@ -197,14 +206,13 @@ namespace app {
     bool m_oneframe;            // Load just one frame (in formats
                                 // that support animation like
                                 // GIF/FLI/ASE).
+    bool m_createPaletteFromRgba;
     bool m_ignoreEmpty;
-
-    // Return if we've to save/embed the color space of the document
-    // in the file.
-    bool m_preserveColorProfile;
 
     // True if the file contained a color profile when it was loaded.
     bool m_embeddedColorProfile;
+
+    FileOpConfig m_config;
 
     base::SharedPtr<FormatOptions> m_formatOptions;
 

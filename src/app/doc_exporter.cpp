@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -17,7 +17,9 @@
 #include "app/doc.h"
 #include "app/file/file.h"
 #include "app/filename_formatter.h"
+#include "app/pref/preferences.h"
 #include "app/restore_visible_layers.h"
+#include "app/snap_to_grid.h"
 #include "base/convert_to.h"
 #include "base/fs.h"
 #include "base/fstream_path.h"
@@ -37,7 +39,7 @@
 #include "doc/sprite.h"
 #include "gfx/packing_rects.h"
 #include "gfx/size.h"
-#include "render/dithering_algorithm.h"
+#include "render/dithering.h"
 #include "render/ordered_dither.h"
 #include "render/render.h"
 
@@ -354,9 +356,7 @@ class DocExporter::BestFitLayoutSamples :
     public DocExporter::LayoutSamples {
 public:
   void layoutSamples(Samples& samples, int borderPadding, int shapePadding, int& width, int& height) override {
-    gfx::PackingRects pr;
-
-    // TODO Add support for shape paddings
+    gfx::PackingRects pr(borderPadding, shapePadding);
 
     for (auto& sample : samples) {
       if (sample.isDuplicated() ||
@@ -374,14 +374,14 @@ public:
     else
       pr.pack(gfx::Size(width, height));
 
-    auto it = samples.begin();
-    for (auto& rc : pr) {
-      if (it->isDuplicated())
+    auto it = pr.begin();
+    for (auto& sample : samples) {
+      if (sample.isDuplicated() ||
+          sample.isEmpty())
         continue;
 
-      ASSERT(it != samples.end());
-      it->setInTextureBounds(rc);
-      ++it;
+      ASSERT(it != pr.end());
+      sample.setInTextureBounds(*(it++));
     }
   }
 };
@@ -396,6 +396,7 @@ DocExporter::DocExporter()
  , m_shapePadding(0)
  , m_innerPadding(0)
  , m_trimCels(false)
+ , m_trimByGrid(false)
  , m_extrude(false)
  , m_listFrameTags(false)
  , m_listLayers(false)
@@ -599,8 +600,22 @@ void DocExporter::captureSamples(Samples& samples)
           sample.setTrimmedBounds(frameBounds = gfx::Rect(0, 0, 0, 0));
         }
 
-        if (m_trimCels)
+        if (m_trimCels) {
+          // TODO merge this code with the code in DocApi::trimSprite()
+          if (m_trimByGrid) {
+            auto& docPref = Preferences::instance().document(doc);
+            gfx::Point posTopLeft =
+              snap_to_grid(docPref.grid.bounds(),
+                           frameBounds.origin(),
+                           PreferSnapTo::FloorGrid);
+            gfx::Point posBottomRight =
+              snap_to_grid(docPref.grid.bounds(),
+                           frameBounds.point2(),
+                           PreferSnapTo::CeilGrid);
+            frameBounds = gfx::Rect(posTopLeft, posBottomRight);
+          }
           sample.setTrimmedBounds(frameBounds);
+        }
       }
 
       samples.addSample(sample);
@@ -728,8 +743,7 @@ void DocExporter::renderTexture(Context* ctx, const Samples& samples, Image* tex
       cmd::SetPixelFormat(
         sample.sprite(),
         textureImage->pixelFormat(),
-        render::DitheringAlgorithm::None,
-        render::DitheringMatrix(),
+        render::Dithering(),
         nullptr)                // TODO add a delegate to show progress
         .execute(ctx);
     }
@@ -824,7 +838,9 @@ void DocExporter::createDataFile(const Samples& samples, std::ostream& os, Image
      << "  \"version\": \"" << VERSION << "\",\n";
 
   if (!m_textureFilename.empty())
-    os << "  \"image\": \"" << escape_for_json(m_textureFilename).c_str() << "\",\n";
+    os << "  \"image\": \""
+       << escape_for_json(base::get_file_name(m_textureFilename)).c_str()
+       << "\",\n";
 
   os << "  \"format\": \"" << (textureImage->pixelFormat() == IMAGE_RGB ? "RGBA8888": "I8") << "\",\n"
      << "  \"size\": { "
@@ -1005,6 +1021,8 @@ void DocExporter::renderSample(const Sample& sample, doc::Image* dst, int x, int
                                         *sample.selectedLayers());
 
   render::Render render;
+  render.setNewBlend(Preferences::instance().experimental.newBlend());
+
   if (extrude) {
     const gfx::Rect& trim = sample.trimmedBounds();
 

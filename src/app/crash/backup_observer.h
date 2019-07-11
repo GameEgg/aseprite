@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -11,22 +12,26 @@
 #include "app/context_observer.h"
 #include "app/doc_observer.h"
 #include "app/docs_observer.h"
-#include "base/mutex.h"
-#include "base/thread.h"
 
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace app {
 class Context;
 class Doc;
 namespace crash {
+  struct RecoveryConfig;
   class Session;
 
   class BackupObserver : public ContextObserver
                        , public DocsObserver
                        , public DocObserver {
   public:
-    BackupObserver(Session* session, Context* ctx);
+    BackupObserver(RecoveryConfig* config,
+                   Session* session,
+                   Context* ctx);
     ~BackupObserver();
 
     void stop();
@@ -36,13 +41,22 @@ namespace crash {
 
   private:
     void backgroundThread();
+    bool saveDocData(Doc* doc);
 
+    RecoveryConfig* m_config;
     Session* m_session;
-    base::mutex m_mutex;
     Context* m_ctx;
     std::vector<Doc*> m_documents;
+    std::vector<Doc*> m_closedDocs;
     bool m_done;
-    base::thread m_thread;
+
+    std::mutex m_mutex;
+
+    // Used to wakeup the backgroundThread() when we have to stop the
+    // thread that saves backups (i.e. when we are closing the application).
+    std::condition_variable m_wakeup;
+
+    std::thread m_thread;
   };
 
 } // namespace crash

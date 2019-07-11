@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -9,6 +10,7 @@
 #endif
 
 #include "app/doc_api.h"
+#include "app/snap_to_grid.h"
 
 #include "app/cmd/add_cel.h"
 #include "app/cmd/add_frame.h"
@@ -45,6 +47,7 @@
 #include "app/context.h"
 #include "app/doc.h"
 #include "app/doc_undo.h"
+#include "app/pref/preferences.h"
 #include "app/transaction.h"
 #include "doc/algorithm/flip_image.h"
 #include "doc/algorithm/shrink_bounds.h"
@@ -56,7 +59,13 @@
 #include "doc/slice.h"
 #include "render/render.h"
 
+#include <algorithm>
+#include <iterator>
 #include <set>
+#include <vector>
+
+#include "gfx/rect_io.h"
+#include "gfx/point_io.h"
 
 #define TRACE_DOCAPI(...)
 
@@ -78,55 +87,20 @@ void DocApi::setSpriteTransparentColor(Sprite* sprite, color_t maskColor)
   m_transaction.execute(new cmd::SetTransparentColor(sprite, maskColor));
 }
 
-void DocApi::cropSprite(Sprite* sprite, const gfx::Rect& bounds)
+void DocApi::cropSprite(Sprite* sprite,
+                        const gfx::Rect& bounds,
+                        const bool trimOutside)
 {
+  ASSERT(m_document == static_cast<Doc*>(sprite->document()));
+
   setSpriteSize(sprite, bounds.w, bounds.h);
 
-  Doc* doc = static_cast<Doc*>(sprite->document());
   LayerList layers = sprite->allLayers();
   for (Layer* layer : layers) {
     if (!layer->isImage())
       continue;
 
-    std::set<ObjectId> visited;
-    CelIterator it = ((LayerImage*)layer)->getCelBegin();
-    CelIterator end = ((LayerImage*)layer)->getCelEnd();
-    for (; it != end; ++it) {
-      Cel* cel = *it;
-      if (visited.find(cel->data()->id()) != visited.end())
-        continue;
-      visited.insert(cel->data()->id());
-
-      if (layer->isBackground()) {
-        Image* image = cel->image();
-        if (image && !cel->link()) {
-          ASSERT(cel->x() == 0);
-          ASSERT(cel->y() == 0);
-
-          // Create the new image through a crop
-          ImageRef new_image(
-            crop_image(image,
-              bounds.x, bounds.y,
-              bounds.w, bounds.h,
-              doc->bgColor(layer)));
-
-          // Replace the image in the stock that is pointed by the cel
-          replaceImage(sprite, cel->imageRef(), new_image);
-        }
-      }
-      else if (layer->isReference()) {
-        // Update the ref cel's bounds
-        gfx::RectF newBounds = cel->boundsF();
-        newBounds.x -= bounds.x;
-        newBounds.y -= bounds.y;
-        m_transaction.execute(new cmd::SetCelBoundsF(cel, newBounds));
-      }
-      else {
-        // Update the cel's position
-        setCelPosition(sprite, cel,
-          cel->x()-bounds.x, cel->y()-bounds.y);
-      }
-    }
+    cropImageLayer(static_cast<LayerImage*>(layer), bounds, trimOutside);
   }
 
   // Update mask position
@@ -137,14 +111,30 @@ void DocApi::cropSprite(Sprite* sprite, const gfx::Rect& bounds)
   // Update slice positions
   if (bounds.origin() != gfx::Point(0, 0)) {
     for (auto& slice : m_document->sprite()->slices()) {
-      for (auto& k : *slice) {
+      Slice::List::List keys;
+      std::copy(slice->begin(), slice->end(),
+                std::back_inserter(keys));
+
+      for (auto& k : keys) {
         const SliceKey& key = *k.value();
         if (key.isEmpty())
           continue;
 
+        gfx::Rect newSliceBounds(key.bounds());
+        newSliceBounds.offset(-bounds.origin());
+
         SliceKey newKey = key;
-        newKey.setBounds(
-          gfx::Rect(newKey.bounds()).offset(-bounds.origin()));
+
+        // If the slice is outside and the user doesn't want the out
+        // of canvas content, we delete the slice.
+        if (trimOutside) {
+          newSliceBounds &= gfx::Rect(bounds.size());
+          if (newSliceBounds.isEmpty())
+            newKey = SliceKey(); // An empty key (so we remove this key)
+        }
+
+        if (!newKey.isEmpty())
+          newKey.setBounds(newSliceBounds);
 
         // As SliceKey::center() and pivot() properties are relative
         // to the bounds(), we don't need to adjust them.
@@ -156,7 +146,137 @@ void DocApi::cropSprite(Sprite* sprite, const gfx::Rect& bounds)
   }
 }
 
-void DocApi::trimSprite(Sprite* sprite)
+void DocApi::cropImageLayer(LayerImage* layer,
+                            const gfx::Rect& bounds,
+                            const bool trimOutside)
+{
+  std::set<ObjectId> visited;
+  CelList cels, clearCels;
+  layer->getCels(cels);
+  for (Cel* cel : cels) {
+    if (visited.find(cel->data()->id()) != visited.end())
+      continue;
+    visited.insert(cel->data()->id());
+
+    if (!cropCel(layer, cel, bounds, trimOutside)) {
+      // Delete this cel and its links
+      clearCels.push_back(cel);
+    }
+  }
+
+  for (Cel* cel : clearCels)
+    clearCelAndAllLinks(cel);
+}
+
+// Returns false if the cel (and its links) must be deleted after this
+bool DocApi::cropCel(LayerImage* layer,
+                     Cel* cel,
+                     const gfx::Rect& bounds,
+                     const bool trimOutside)
+{
+  if (layer->isBackground()) {
+    Image* image = cel->image();
+    if (image && !cel->link()) {
+      ASSERT(cel->x() == 0);
+      ASSERT(cel->y() == 0);
+
+      ImageRef newImage(
+        crop_image(image,
+                   bounds.x, bounds.y,
+                   bounds.w, bounds.h,
+                   m_document->bgColor(layer)));
+
+      replaceImage(cel->sprite(),
+                   cel->imageRef(),
+                   newImage);
+    }
+    return true;
+  }
+
+  if (layer->isReference()) {
+    // Update the ref cel's bounds
+    gfx::RectF newBounds = cel->boundsF();
+    newBounds.x -= bounds.x;
+    newBounds.y -= bounds.y;
+    m_transaction.execute(new cmd::SetCelBoundsF(cel, newBounds));
+    return true;
+  }
+
+  gfx::Point newCelPos(cel->position() - bounds.origin());
+
+  // This is the complex case: we want to crop a transparent cel and
+  // remove the content that is outside the sprite canvas. This might
+  // generate one or two of the following Cmd:
+  // 1. Clear the cel ("return false" will generate a "cmd::ClearCel"
+  //    then) if the cel bounds will be totally outside in the new
+  //    canvas size
+  // 2. Replace the cel image if the cel must be cut in
+  //    some edge because it's not totally contained
+  // 3. Just set the cel position (the most common case)
+  //    if the cel image will be completely inside the new
+  //    canvas
+  if (trimOutside) {
+    Image* image = cel->image();
+    if (image && !cel->link()) {
+      gfx::Rect newCelBounds = (bounds & cel->bounds());
+
+      if (newCelBounds.isEmpty())
+        return false;
+
+      newCelBounds.offset(-bounds.origin());
+
+      gfx::Point paintPos(newCelBounds.x - newCelPos.x,
+                          newCelBounds.y - newCelPos.y);
+
+      newCelPos = newCelBounds.origin();
+
+      // Crop the image
+      ImageRef newImage(
+        crop_image(image,
+                   paintPos.x, paintPos.y,
+                   newCelBounds.w, newCelBounds.h,
+                   m_document->bgColor(layer)));
+
+      // Try to shrink the image ignoring transparent borders
+      gfx::Rect frameBounds;
+      if (doc::algorithm::shrink_bounds(newImage.get(),
+                                        frameBounds,
+                                        newImage->maskColor())) {
+        // In this case the new cel image can be even smaller
+        if (frameBounds != newImage->bounds()) {
+          newImage = ImageRef(
+            crop_image(newImage.get(),
+                       frameBounds.x, frameBounds.y,
+                       frameBounds.w, frameBounds.h,
+                       m_document->bgColor(layer)));
+
+          newCelPos += frameBounds.origin();
+        }
+      }
+      else {
+        // Delete this cel and its links
+        return false;
+      }
+
+      // If it's the same iamge, we can re-use the cel image and just
+      // move the cel position.
+      if (!is_same_image(cel->image(), newImage.get())) {
+        replaceImage(cel->sprite(),
+                     cel->imageRef(),
+                     newImage);
+      }
+    }
+  }
+
+  // Update the cel's position
+  setCelPosition(
+    cel->sprite(), cel,
+    newCelPos.x,
+    newCelPos.y);
+  return true;
+}
+
+void DocApi::trimSprite(Sprite* sprite, const bool byGrid)
 {
   gfx::Rect bounds;
 
@@ -174,6 +294,21 @@ void DocApi::trimSprite(Sprite* sprite)
     gfx::Rect frameBounds;
     if (doc::algorithm::shrink_bounds(image, frameBounds, get_pixel(image, 0, 0)))
       bounds = bounds.createUnion(frameBounds);
+
+    // TODO merge this code with the code in DocExporter::captureSamples()
+    if (byGrid) {
+      Doc* doc = m_document;
+      auto& docPref = Preferences::instance().document(doc);
+      gfx::Point posTopLeft =
+              snap_to_grid(docPref.grid.bounds(),
+                           bounds.origin(),
+                           PreferSnapTo::FloorGrid);
+      gfx::Point posBottomRight =
+              snap_to_grid(docPref.grid.bounds(),
+                           bounds.point2(),
+                           PreferSnapTo::CeilGrid);
+      bounds = gfx::Rect(posTopLeft, posBottomRight);
+    }
   }
 
   if (!bounds.isEmpty())
@@ -368,7 +503,8 @@ void DocApi::setCelPosition(Sprite* sprite, Cel* cel, int x, int y)
 {
   ASSERT(cel);
 
-  m_transaction.execute(new cmd::SetCelPosition(cel, x, y));
+  if (cel->x() != x || cel->y() != y)
+    m_transaction.execute(new cmd::SetCelPosition(cel, x, y));
 }
 
 void DocApi::setCelOpacity(Sprite* sprite, Cel* cel, int newOpacity)
@@ -389,6 +525,20 @@ void DocApi::clearCel(Cel* cel)
 {
   ASSERT(cel);
   m_transaction.execute(new cmd::ClearCel(cel));
+}
+
+void DocApi::clearCelAndAllLinks(Cel* cel)
+{
+  ASSERT(cel);
+
+  ObjectId dataId = cel->data()->id();
+
+  CelList cels;
+  cel->layer()->getCels(cels);
+  for (Cel* cel2 : cels) {
+    if (cel2->data()->id() == dataId)
+      clearCel(cel2);
+  }
 }
 
 void DocApi::moveCel(

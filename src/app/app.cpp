@@ -17,6 +17,7 @@
 #include "app/cli/cli_processor.h"
 #include "app/cli/default_cli_delegate.h"
 #include "app/cli/preview_cli_delegate.h"
+#include "app/color_spaces.h"
 #include "app/color_utils.h"
 #include "app/commands/commands.h"
 #include "app/console.h"
@@ -59,11 +60,11 @@
 #include "base/split_string.h"
 #include "doc/sprite.h"
 #include "fmt/format.h"
-#include "render/render.h"
 #include "os/display.h"
 #include "os/error.h"
 #include "os/surface.h"
 #include "os/system.h"
+#include "render/render.h"
 #include "ui/intern.h"
 #include "ui/ui.h"
 
@@ -127,10 +128,8 @@ public:
   Extensions m_extensions;
   // Load main language (after loading the extensions)
   LoadLanguage m_loadLanguage;
-#ifdef ENABLE_UI
   tools::ToolBox m_toolbox;
   tools::ActiveToolManager m_activeToolManager;
-#endif
   Commands m_commands;
   ContextT m_context;
 #ifdef ENABLE_UI
@@ -138,38 +137,59 @@ public:
   InputChain m_inputChain;
   clipboard::ClipboardManager m_clipboardManager;
 #endif
-  // This is a raw pointer because we want to delete this explicitly.
+  // This is a raw pointer because we want to delete it explicitly.
+  // (e.g. if an exception occurs, the ~Modules() doesn't have to
+  // delete m_recovery)
   app::crash::DataRecovery* m_recovery;
 
   Modules(const bool createLogInDesktop,
           Preferences& pref)
     : m_loggerModule(createLogInDesktop)
     , m_loadLanguage(pref, m_extensions)
-#ifdef ENABLE_UI
     , m_activeToolManager(&m_toolbox)
+#ifdef ENABLE_UI
     , m_recent_files(pref.general.recentItems())
 #endif
     , m_recovery(nullptr) {
+  }
+
+  ~Modules() {
+    ASSERT(m_recovery == nullptr);
   }
 
   app::crash::DataRecovery* recovery() {
     return m_recovery;
   }
 
-  bool hasRecoverySessions() const {
-    return m_recovery && !m_recovery->sessions().empty();
-  }
-
   void createDataRecovery() {
 #ifdef ENABLE_DATA_RECOVERY
     m_recovery = new app::crash::DataRecovery(&m_context);
+    m_recovery->SessionsListIsReady.connect(
+      [] {
+        ui::assert_ui_thread();
+        auto app = App::instance();
+        if (app && app->mainWindow()) {
+          // Notify that the list of sessions is ready.
+          app->mainWindow()->dataRecoverySessionsAreReady();
+        }
+      });
+#endif
+  }
+
+  void searchDataRecoverySessions() {
+#ifdef ENABLE_DATA_RECOVERY
+    ASSERT(m_recovery);
+    if (m_recovery)
+      m_recovery->launchSearch();
 #endif
   }
 
   void deleteDataRecovery() {
 #ifdef ENABLE_DATA_RECOVERY
-    delete m_recovery;
-    m_recovery = nullptr;
+    if (m_recovery) {
+      delete m_recovery;
+      m_recovery = nullptr;
+    }
 #endif
   }
 
@@ -229,6 +249,8 @@ void App::initialize(const AppOptions& options)
       break;
   }
 
+  initialize_color_spaces();
+
   // Load modules
   m_modules = new Modules(createLogInDesktop, preferences());
   m_legacy = new LegacyModules(isGui() ? REQUIRE_INTERFACE: 0);
@@ -268,14 +290,15 @@ void App::initialize(const AppOptions& options)
     if (m_mod)
       m_mod->modMainWindow(m_mainWindow.get());
 
+    // Data recovery is enabled only in GUI mode
+    if (preferences().general.dataRecovery())
+      m_modules->searchDataRecoverySessions();
+
     // Default status of the main window.
     app_rebuild_documents_tabs();
-    app_default_statusbar_message();
+    m_mainWindow->statusBar()->showDefaultText();
 
-    // Recover data
-    if (m_modules->hasRecoverySessions())
-      m_mainWindow->showDataRecovery(m_modules->recovery());
-
+    // Show the main window (this is not modal, the code continues)
     m_mainWindow->openWindow();
 
     // Redraw the whole screen.
@@ -384,11 +407,26 @@ void App::run()
   }
 #endif  // ENABLE_SCRIPTING
 
-  // Destroy all documents in the UIContext.
-  const Docs& docs = m_modules->m_context.documents();
-  while (!docs.empty()) {
-    Doc* doc = docs.back();
+#ifdef ENABLE_UI
+  if (isGui()) {
+    // Select no document
+    m_modules->m_context.setActiveView(nullptr);
 
+    // Delete backups (this is a normal shutdown, we are not handling
+    // exceptions, and we are not in a destructor).
+    m_modules->deleteDataRecovery();
+  }
+#endif
+
+  // Destroy all documents from the UIContext.
+  std::vector<Doc*> docs;
+#ifdef ENABLE_UI
+  for (Doc* doc : m_modules->m_context.getAndRemoveAllClosedDocs())
+    docs.push_back(doc);
+#endif
+  for (Doc* doc : m_modules->m_context.documents())
+    docs.push_back(doc);
+  for (Doc* doc : docs) {
     // First we close the document. In this way we receive recent
     // notifications related to the document as a app::Doc. If
     // we delete the document directly, we destroy the app::Doc
@@ -407,13 +445,9 @@ void App::run()
 #ifdef ENABLE_UI
   if (isGui()) {
     // Destroy the window.
-    m_mainWindow.reset(NULL);
+    m_mainWindow.reset(nullptr);
   }
 #endif
-
-  // Delete backups (this is a normal shutdown, we are not handling
-  // exceptions, and we are not in a destructor).
-  m_modules->deleteDataRecovery();
 }
 
 // Finishes the Aseprite application.
@@ -449,6 +483,14 @@ App::~App()
 
     delete m_legacy;
     delete m_modules;
+
+    // Save preferences only if we are running in GUI mode.  when we
+    // run in batch mode we might want to reset some preferences so
+    // the scripts have a reproducible behavior. Those reset
+    // preferences must not be saved.
+    if (isGui())
+      m_coreModules->m_preferences.save();
+
     delete m_coreModules;
 
 #ifdef ENABLE_UI
@@ -493,29 +535,17 @@ bool App::isPortable()
 tools::ToolBox* App::toolBox() const
 {
   ASSERT(m_modules != NULL);
-#ifdef ENABLE_UI
   return &m_modules->m_toolbox;
-#else
-  return nullptr;
-#endif
 }
 
 tools::Tool* App::activeTool() const
 {
-#ifdef ENABLE_UI
   return m_modules->m_activeToolManager.activeTool();
-#else
-  return nullptr;
-#endif
 }
 
 tools::ActiveToolManager* App::activeToolManager() const
 {
-#ifdef ENABLE_UI
   return &m_modules->m_activeToolManager;
-#else
-  return nullptr;
-#endif
 }
 
 RecentFiles* App::recentFiles() const
@@ -650,26 +680,14 @@ void app_rebuild_documents_tabs()
 
 PixelFormat app_get_current_pixel_format()
 {
-#ifdef ENABLE_UI
-  Context* context = UIContext::instance();
-  ASSERT(context != NULL);
+  Context* ctx = App::instance()->context();
+  ASSERT(ctx);
 
-  Doc* document = context->activeDocument();
-  if (document != NULL)
-    return document->sprite()->pixelFormat();
+  Doc* doc = ctx->activeDocument();
+  if (doc)
+    return doc->sprite()->pixelFormat();
   else
     return IMAGE_RGB;
-#else // ENABLE_UI
-  return IMAGE_RGB;
-#endif
-}
-
-void app_default_statusbar_message()
-{
-#ifdef ENABLE_UI
-  StatusBar::instance()
-    ->setStatusText(250, "%s %s | %s", PACKAGE, VERSION, COPYRIGHT);
-#endif
 }
 
 int app_get_color_to_clear_layer(Layer* layer)

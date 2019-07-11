@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2018  David Capello
 //
 // This program is distributed under the terms of
@@ -137,7 +138,7 @@ app::Color Color_new(lua_State* L, int index)
   }
   // raw color into app color
   else if (!lua_isnone(L, index)) {
-    if (lua_isinteger(L, index) && lua_isnone(L, index+1)) {
+    if (lua_isinteger(L, index) && (index < 0 || lua_isnone(L, index+1))) {
       doc::color_t docColor = lua_tointeger(L, index);
       switch (app_get_current_pixel_format()) {
         case IMAGE_RGB:
@@ -155,7 +156,7 @@ app::Color Color_new(lua_State* L, int index)
           break;
       }
     }
-    else {
+    else if (index >= 0) {
       color = app::Color::fromRgb(lua_tointeger(L, index),
                                   lua_tointeger(L, index+1),
                                   lua_tointeger(L, index+2),
@@ -285,6 +286,24 @@ int Color_get_index(lua_State* L)
 {
   auto color = get_obj<app::Color>(L, 1);
   lua_pushnumber(L, color->getIndex());
+  return 1;
+}
+
+int Color_get_rgbaPixel(lua_State* L)
+{
+  auto color = get_obj<app::Color>(L, 1);
+  auto pixelColor = color_utils::color_for_target_mask(
+    *color, ColorTarget(ColorTarget::TransparentLayer, IMAGE_RGB, 0));
+  lua_pushinteger(L, pixelColor);
+  return 1;
+}
+
+int Color_get_grayPixel(lua_State* L)
+{
+  auto color = get_obj<app::Color>(L, 1);
+  auto pixelColor = color_utils::color_for_target_mask(
+    *color, ColorTarget(ColorTarget::TransparentLayer, IMAGE_GRAYSCALE, 0));
+  lua_pushinteger(L, pixelColor);
   return 1;
 }
 
@@ -441,6 +460,8 @@ const Property Color_properties[] = {
   { "lightness", Color_get_hslLightness, Color_set_hslLightness },
   { "index", Color_get_index, Color_set_index },
   { "gray", Color_get_gray, Color_set_gray },
+  { "rgbaPixel", Color_get_rgbaPixel, nullptr },
+  { "grayPixel", Color_get_grayPixel, nullptr },
   { nullptr, nullptr, nullptr }
 };
 

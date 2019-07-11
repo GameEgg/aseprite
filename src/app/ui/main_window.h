@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -58,6 +58,7 @@ namespace app {
 
     MainMenuBar* getMenuBar() { return m_menuBar; }
     ContextBar* getContextBar() { return m_contextBar; }
+    StatusBar* statusBar() { return m_statusBar; }
     WorkspaceTabs* getTabsBar() { return m_tabsBar; }
     Timeline* getTimeline() { return m_timeline; }
     Workspace* getWorkspace() { return m_workspace; }
@@ -81,7 +82,9 @@ namespace app {
     void setTimelineVisibility(bool visible);
     void popTimeline();
 
-    void showDataRecovery(crash::DataRecovery* dataRecovery);
+    // When crash::DataRecovery finish to search for sessions, this
+    // function is called.
+    void dataRecoverySessionsAreReady();
 
     // TabsDelegate implementation.
     bool isTabModified(Tabs* tabs, TabView* tabView) override;

@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -141,10 +141,11 @@ namespace app {
     // DocObserver impl.
     void onGeneralUpdate(DocEvent& ev) override;
     void onAddLayer(DocEvent& ev) override;
+    void onBeforeRemoveLayer(DocEvent& ev) override;
     void onAfterRemoveLayer(DocEvent& ev) override;
     void onAddFrame(DocEvent& ev) override;
     void onRemoveFrame(DocEvent& ev) override;
-    void onSelectionChanged(DocEvent& ev) override;
+    void onSelectionBoundariesChanged(DocEvent& ev) override;
     void onLayerNameChange(DocEvent& ev) override;
     void onAddFrameTag(DocEvent& ev) override;
     void onRemoveFrameTag(DocEvent& ev) override;
@@ -407,8 +408,7 @@ namespace app {
 
     // Data used for thumbnails.
     bool m_thumbnailsOverlayVisible;
-    gfx::Rect m_thumbnailsOverlayInner;
-    gfx::Rect m_thumbnailsOverlayOuter;
+    gfx::Rect m_thumbnailsOverlayBounds;
     Hit m_thumbnailsOverlayHit;
     gfx::Point m_thumbnailsOverlayDirection;
     obs::connection m_thumbnailsPrefConn;

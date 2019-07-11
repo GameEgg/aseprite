@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -239,14 +239,29 @@ bool StandbyState::onMouseDown(Editor* editor, MouseMessage* msg)
       case EditorHit::SliceBounds:
       case EditorHit::SliceCenter:
         if (msg->left()) {
-          MovingSliceState* newState = new MovingSliceState(editor, msg, hit);
+          // If we click outside all slices, we clear the selection of slices.
+          if (!hit.slice() || !site.selectedSlices().contains(hit.slice()->id())) {
+            editor->clearSlicesSelection();
+            editor->selectSlice(hit.slice());
+
+            site = Site();
+            editor->getSite(&site);
+          }
+
+          MovingSliceState* newState = new MovingSliceState(
+            editor, msg, hit, site.selectedSlices());
           editor->setState(EditorStatePtr(newState));
         }
         else {
           Menu* popupMenu = AppMenus::instance()->getSlicePopupMenu();
           if (popupMenu) {
             Params params;
-            params.set("id", base::convert_to<std::string>(hit.slice()->id()).c_str());
+            // When the editor doesn't have a set of selected slices,
+            // we set the specific clicked slice for the commands (in
+            // other case, those commands will get the selected set of
+            // slices from Site::selectedSlices() field).
+            if (!editor->hasSelectedSlices())
+              params.set("id", base::convert_to<std::string>(hit.slice()->id()).c_str());
             AppMenuItem::setContextParams(params);
             popupMenu->showPopup(msg->position());
             AppMenuItem::setContextParams(Params());
@@ -391,8 +406,19 @@ bool StandbyState::onDoubleClick(Editor* editor, MouseMessage* msg)
     else if (int(editor->getToolLoopModifiers()) & int(tools::ToolLoopModifiers::kIntersectSelection))
       params.set("mode", "intersect");
 
-    UIContext::instance()->executeCommand(selectTileCmd, params);
+    UIContext::instance()->executeCommandFromMenuOrShortcut(selectTileCmd, params);
     return true;
+  }
+  // Show slice properties when we double-click it
+  else if (ink->isSlice()) {
+    EditorHit hit = editor->calcHit(msg->position());
+    if (hit.slice()) {
+      Command* cmd = Commands::instance()->byId(CommandId::SliceProperties());
+      Params params;
+      params.set("id", base::convert_to<std::string>(hit.slice()->id()).c_str());
+      UIContext::instance()->executeCommandFromMenuOrShortcut(cmd, params);
+      return true;
+    }
   }
 
   return false;
@@ -571,10 +597,11 @@ bool StandbyState::onUpdateStatusBar(Editor* editor)
 
     if (editor->docPref().show.grid()) {
       auto gb = editor->docPref().grid.bounds();
-      int col = int((std::floor(spritePos.x) - (gb.x % gb.w)) / gb.w);
-      int row = int((std::floor(spritePos.y) - (gb.y % gb.h)) / gb.h);
-      sprintf(
-        buf+std::strlen(buf), " :grid: %d %d", col, row);
+      if (!gb.isEmpty()) {
+        int col = int((std::floor(spritePos.x) - (gb.x % gb.w)) / gb.w);
+        int row = int((std::floor(spritePos.y) - (gb.y % gb.h)) / gb.h);
+        sprintf(buf+std::strlen(buf), " :grid: %d %d", col, row);
+      }
     }
 
     if (editor->docPref().show.slices()) {
@@ -639,7 +666,8 @@ bool StandbyState::checkStartDrawingStraightLine(Editor* editor,
                                                  const ui::MouseMessage* msg)
 {
   // Start line preview with shift key
-  if (editor->startStraightLineWithFreehandTool(msg)) {
+  if (canCheckStartDrawingStraightLine() &&
+      editor->startStraightLineWithFreehandTool(msg)) {
     tools::Pointer::Button pointerButton =
       (msg ? button_from_msg(msg): tools::Pointer::Left);
 
@@ -720,7 +748,8 @@ void StandbyState::transformSelection(Editor* editor, MouseMessage* msg, HandleT
     editor->brushPreview().hide();
 
     EditorCustomizationDelegate* customization = editor->getCustomizationDelegate();
-    std::unique_ptr<Image> tmpImage(new_image_from_mask(editor->getSite()));
+    std::unique_ptr<Image> tmpImage(new_image_from_mask(editor->getSite(),
+                                                        Preferences::instance().experimental.newBlend()));
 
     PixelsMovementPtr pixelsMovement(
       new PixelsMovement(UIContext::instance(),

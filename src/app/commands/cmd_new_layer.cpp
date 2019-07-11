@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -9,9 +10,12 @@
 #endif
 
 #include "app/app.h"
+#include "app/cmd/clear_mask.h"
 #include "app/cmd/move_layer.h"
+#include "app/cmd/trim_cel.h"
 #include "app/commands/command.h"
 #include "app/commands/commands.h"
+#include "app/commands/new_params.h"
 #include "app/commands/params.h"
 #include "app/context_access.h"
 #include "app/doc_api.h"
@@ -23,9 +27,13 @@
 #include "app/ui/main_window.h"
 #include "app/ui/status_bar.h"
 #include "app/ui_context.h"
+#include "app/util/clipboard.h"
+#include "app/util/new_image_from_mask.h"
 #include "doc/layer.h"
 #include "doc/primitives.h"
 #include "doc/sprite.h"
+#include "fmt/format.h"
+#include "render/dithering.h"
 #include "render/ordered_dither.h"
 #include "render/quantization.h"
 #include "render/render.h"
@@ -40,7 +48,20 @@ namespace app {
 
 using namespace ui;
 
-class NewLayerCommand : public Command {
+struct NewLayerParams : public NewParams {
+  Param<std::string> name { this, std::string(), "name" };
+  Param<bool> group { this, false, "group" };
+  Param<bool> reference { this, false, "reference" };
+  Param<bool> ask { this, false, "ask" };
+  Param<bool> fromFile { this, false, { "fromFile", "from-file" } };
+  Param<bool> fromClipboard { this, false, "fromClipboard" };
+  Param<bool> viaCut { this, false, "viaCut" };
+  Param<bool> viaCopy { this, false, "viaCopy" };
+  Param<bool> top { this, false, "top" };
+  Param<bool> before { this, false, "before" };
+};
+
+class NewLayerCommand : public CommandWithNewParams<NewLayerParams> {
 public:
   enum class Type { Layer, Group, ReferenceLayer };
   enum class Place { AfterActiveLayer, BeforeActiveLayer, Top };
@@ -54,48 +75,55 @@ protected:
   std::string onGetFriendlyName() const override;
 
 private:
+  void adjustRefCelBounds(Cel* cel, gfx::RectF bounds);
   std::string getUniqueLayerName(const Sprite* sprite) const;
   int getMaxLayerNum(const Layer* layer) const;
-  const char* layerPrefix() const;
+  std::string layerPrefix() const;
 
-  std::string m_name;
   Type m_type;
   Place m_place;
-  bool m_ask;
-  bool m_fromFile;
 };
 
 NewLayerCommand::NewLayerCommand()
-  : Command(CommandId::NewLayer(), CmdRecordableFlag)
+  : CommandWithNewParams(CommandId::NewLayer(), CmdRecordableFlag)
 {
-  m_name = "";
-  m_type = Type::Layer;
-  m_place = Place::AfterActiveLayer;
-  m_ask = false;
 }
 
-void NewLayerCommand::onLoadParams(const Params& params)
+void NewLayerCommand::onLoadParams(const Params& commandParams)
 {
-  m_name = params.get("name");
+  CommandWithNewParams<NewLayerParams>::onLoadParams(commandParams);
+
   m_type = Type::Layer;
-  if (params.get("group") == "true")
+  if (params().group())
     m_type = Type::Group;
-  else if (params.get("reference") == "true")
+  else if (params().reference())
     m_type = Type::ReferenceLayer;
 
-  m_ask = (params.get("ask") == "true");
-  m_fromFile = (params.get("from-file") == "true");
   m_place = Place::AfterActiveLayer;
-  if (params.get("top") == "true")
+  if (params().top())
     m_place = Place::Top;
-  else if (params.get("before") == "true")
+  else if (params().before())
     m_place = Place::BeforeActiveLayer;
 }
 
 bool NewLayerCommand::onEnabled(Context* context)
 {
-  return context->checkFlags(ContextFlags::ActiveDocumentIsWritable |
-                             ContextFlags::HasActiveSprite);
+  if (!context->checkFlags(ContextFlags::ActiveDocumentIsWritable |
+                           ContextFlags::HasActiveSprite))
+    return false;
+
+#ifdef ENABLE_UI
+  if (params().fromClipboard() &&
+      clipboard::get_current_format() != clipboard::ClipboardImage)
+    return false;
+#endif
+
+  if ((params().viaCut() ||
+       params().viaCopy()) &&
+      !context->checkFlags(ContextFlags::HasVisibleMask))
+    return false;
+
+  return true;
 }
 
 namespace {
@@ -111,6 +139,7 @@ private:
 void NewLayerCommand::onExecute(Context* context)
 {
   ContextWriter writer(context);
+  Site site = context->activeSite();
   Doc* document(writer.document());
   Sprite* sprite(writer.sprite());
   std::string name;
@@ -119,19 +148,19 @@ void NewLayerCommand::onExecute(Context* context)
   Scoped destroyPasteDoc(
     [&pasteDoc, context]{
       if (pasteDoc) {
-        context->documents().remove(pasteDoc);
-        delete pasteDoc;
+        DocDestroyer destroyer(context, pasteDoc, 100);
+        destroyer.destroyDocument();
       }
     });
 
-  // Default name (m_name is a name specified in params)
-  if (!m_name.empty())
-    name = m_name;
+  // Default name
+  if (params().name.isSet())
+    name = params().name();
   else
     name = getUniqueLayerName(sprite);
 
   // Select a file to copy its content
-  if (m_fromFile) {
+  if (params().fromFile()) {
     Doc* oldActiveDocument = context->activeDocument();
     Command* openFile = Commands::instance()->byId(CommandId::OpenFile());
     Params params;
@@ -152,7 +181,7 @@ void NewLayerCommand::onExecute(Context* context)
 
 #ifdef ENABLE_UI
   // If params specify to ask the user about the name...
-  if (m_ask) {
+  if (params().ask()) {
     // We open the window to ask the name
     app::gen::NewLayer window;
     window.name()->setText(name.c_str());
@@ -167,7 +196,7 @@ void NewLayerCommand::onExecute(Context* context)
 
   LayerGroup* parent = sprite->root();
   Layer* activeLayer = writer.layer();
-  SelectedLayers selLayers = writer.site()->selectedLayers();
+  SelectedLayers selLayers = site.selectedLayers();
   if (activeLayer) {
     if (activeLayer->isGroup() &&
         activeLayer->isExpanded() &&
@@ -184,7 +213,7 @@ void NewLayerCommand::onExecute(Context* context)
   {
     Tx tx(
       writer.context(),
-      std::string("New ") + layerPrefix());
+      fmt::format(Strings::commands_NewLayer(), layerPrefix()));
     DocApi api = document->getApi(tx);
     bool afterBackground = false;
 
@@ -230,7 +259,7 @@ void NewLayerCommand::onExecute(Context* context)
     }
 
     // Put all selected layers inside the group
-    if (m_type == Type::Group && writer.site()->inTimeline()) {
+    if (m_type == Type::Group && site.inTimeline()) {
       LayerGroup* commonParent = nullptr;
       layer_t sameParents = 0;
       for (Layer* l : selLayers) {
@@ -254,6 +283,7 @@ void NewLayerCommand::onExecute(Context* context)
     if (pasteDoc && layer->isImage()) {
       Sprite* pasteSpr = pasteDoc->sprite();
       render::Render render;
+      render.setNewBlend(true);
       render.setBgType(render::BgType::NONE);
 
       // Add more frames at the end
@@ -280,8 +310,7 @@ void NewLayerCommand::onExecute(Context* context)
               pasteImage.get(),
               nullptr,
               sprite->pixelFormat(),
-              render::DitheringAlgorithm::None,
-              render::DitheringMatrix(),
+              render::Dithering(),
               sprite->rgbMap(dstFrame),
               pasteSpr->palette(fr),
               (pasteSpr->backgroundLayer() ? true: false),
@@ -301,18 +330,53 @@ void NewLayerCommand::onExecute(Context* context)
 
         if (cel) {
           if (layer->isReference()) {
-            gfx::RectF bounds(0, 0, pasteSpr->width(), pasteSpr->height());
-            double scale = MIN(double(sprite->width()) / bounds.w,
-                               double(sprite->height()) / bounds.h);
-            bounds.w *= scale;
-            bounds.h *= scale;
-            bounds.x = sprite->width()/2 - bounds.w/2;
-            bounds.y = sprite->height()/2 - bounds.h/2;
-            cel->setBoundsF(bounds);
+            adjustRefCelBounds(
+              cel, gfx::RectF(0, 0, pasteSpr->width(), pasteSpr->height()));
           }
           else {
             cel->setPosition(sprite->width()/2 - pasteSpr->width()/2,
                              sprite->height()/2 - pasteSpr->height()/2);
+          }
+        }
+      }
+    }
+#ifdef ENABLE_UI
+    // Paste new layer from clipboard
+    else if (params().fromClipboard() && layer->isImage()) {
+      clipboard::paste(context, false);
+
+      if (layer->isReference()) {
+        if (Cel* cel = layer->cel(site.frame())) {
+          adjustRefCelBounds(
+            cel, cel->boundsF());
+        }
+      }
+    }
+#endif // ENABLE_UI
+    // Paste new layer from selection
+    else if ((params().viaCut() || params().viaCopy())
+             && layer->isImage()
+             && document->isMaskVisible()) {
+      const doc::Mask* mask = document->mask();
+      ASSERT(mask);
+      ImageRef image(new_image_from_mask(site, mask, true));
+      if (image) {
+        Cel* cel = api.addCel(static_cast<LayerImage*>(layer),
+                              site.frame(), image);
+        if (cel) {
+          gfx::Point pos = mask->bounds().origin();
+          cel->setPosition(pos.x, pos.y);
+        }
+
+        if (params().viaCut() &&
+            site.cel() && site.layer()) {
+          tx(new cmd::ClearMask(site.cel()));
+
+          if (site.layer()->isTransparent()) {
+            // If the cel wasn't deleted by cmd::ClearMask, we trim it.
+            cel = site.layer()->cel(site.frame());
+            if (cel)
+              tx(new cmd::TrimCel(cel));
           }
         }
       }
@@ -328,7 +392,7 @@ void NewLayerCommand::onExecute(Context* context)
     StatusBar::instance()->invalidate();
     StatusBar::instance()->showTip(
       1000, "%s '%s' created",
-      layerPrefix(),
+      layerPrefix().c_str(),
       name.c_str());
 
     App::instance()->mainWindow()->popTimeline();
@@ -339,32 +403,36 @@ void NewLayerCommand::onExecute(Context* context)
 std::string NewLayerCommand::onGetFriendlyName() const
 {
   std::string text;
-
-  switch (m_type) {
-    case Type::Layer:
-      if (m_place == Place::BeforeActiveLayer)
-        text = Strings::commands_NewLayer_BeforeActiveLayer();
-      else
-        text = Strings::commands_NewLayer();
-      break;
-    case Type::Group:
-      text = Strings::commands_NewLayer_Group();
-      break;
-    case Type::ReferenceLayer:
-      text = Strings::commands_NewLayer_ReferenceLayer();
-      break;
-  }
-
+  if (m_place == Place::BeforeActiveLayer)
+    text = fmt::format(Strings::commands_NewLayer_BeforeActiveLayer(), layerPrefix());
+  else
+    text = fmt::format(Strings::commands_NewLayer(), layerPrefix());
+  if (params().fromClipboard())
+    text = fmt::format(Strings::commands_NewLayer_FromClipboard(), text);
+  if (params().viaCopy())
+    text = fmt::format(Strings::commands_NewLayer_ViaCopy(), text);
+  if (params().viaCut())
+    text = fmt::format(Strings::commands_NewLayer_ViaCut(), text);
   return text;
+}
+
+void NewLayerCommand::adjustRefCelBounds(Cel* cel, gfx::RectF bounds)
+{
+  Sprite* sprite = cel->sprite();
+  double scale = MIN(double(sprite->width()) / bounds.w,
+                     double(sprite->height()) / bounds.h);
+  bounds.w *= scale;
+  bounds.h *= scale;
+  bounds.x = sprite->width()/2 - bounds.w/2;
+  bounds.y = sprite->height()/2 - bounds.h/2;
+  cel->setBoundsF(bounds);
 }
 
 std::string NewLayerCommand::getUniqueLayerName(const Sprite* sprite) const
 {
-  char buf[1024];
-  std::sprintf(buf, "%s %d",
-               layerPrefix(),
-               getMaxLayerNum(sprite->root())+1);
-  return buf;
+  return fmt::format("{} {}",
+                     layerPrefix(),
+                     getMaxLayerNum(sprite->root())+1);
 }
 
 int NewLayerCommand::getMaxLayerNum(const Layer* layer) const
@@ -386,12 +454,12 @@ int NewLayerCommand::getMaxLayerNum(const Layer* layer) const
   return max;
 }
 
-const char* NewLayerCommand::layerPrefix() const
+std::string NewLayerCommand::layerPrefix() const
 {
   switch (m_type) {
-    case Type::Layer: return "Layer";
-    case Type::Group: return "Group";
-    case Type::ReferenceLayer: return "Reference Layer";
+    case Type::Layer: return Strings::commands_NewLayer_Layer();
+    case Type::Group: return Strings::commands_NewLayer_Group();
+    case Type::ReferenceLayer: return Strings::commands_NewLayer_ReferenceLayer();
   }
   return "Unknown";
 }

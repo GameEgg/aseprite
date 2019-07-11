@@ -11,11 +11,13 @@
 #include "doc/algorithm/hline.h"
 #include "gfx/fwd.h"
 
+#include <vector>
+
 namespace doc {
   namespace algorithm {
 
     void polygon(int vertices, const int* points, void* data, AlgoHLine proc);
-
+    bool createUnion(std::vector<int>& pairs, const int x, int& ints);
   }
 }
 

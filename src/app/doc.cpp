@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -75,8 +75,15 @@ void Doc::setContext(Context* ctx)
   removeFromContext();
 
   m_ctx = ctx;
-  if (ctx)
+  if (ctx) {
+    // Remove the flag that indicates that this doc is fully backed
+    // up, because now we are inside a context, so the user can change
+    // it again and the backup will be outdated.
+    if (m_flags & kFullyBackedUp)
+      m_flags ^= kFullyBackedUp;
+
     ctx->documents().add(this);
+  }
 
   onContextChanged();
 }
@@ -180,6 +187,12 @@ void Doc::notifySelectionChanged()
   notify_observers<DocEvent&>(&DocObserver::onSelectionChanged, ev);
 }
 
+void Doc::notifySelectionBoundariesChanged()
+{
+  DocEvent ev(this);
+  notify_observers<DocEvent&>(&DocObserver::onSelectionBoundariesChanged, ev);
+}
+
 bool Doc::isModified() const
 {
   return !m_undo->isSavedState();
@@ -221,6 +234,16 @@ void Doc::setInhibitBackup(const bool inhibitBackup)
     m_flags &= ~kInhibitBackup;
 }
 
+void Doc::markAsBackedUp()
+{
+  m_flags |= kFullyBackedUp;
+}
+
+bool Doc::isFullyBackedUp() const
+{
+  return (m_flags & kFullyBackedUp ? true: false);
+}
+
 //////////////////////////////////////////////////////////////////////
 // Loaded options from file
 
@@ -252,8 +275,7 @@ void Doc::generateMaskBoundaries(const Mask* mask)
                              mask->bounds().y);
   }
 
-  // TODO move this to the exact place where selection is modified.
-  notifySelectionChanged();
+  notifySelectionBoundariesChanged();
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -261,7 +283,9 @@ void Doc::generateMaskBoundaries(const Mask* mask)
 
 void Doc::setMask(const Mask* mask)
 {
-  m_mask.reset(new Mask(*mask));
+  ASSERT(mask);
+
+  m_mask->copyFrom(mask);
   m_flags |= kMaskVisible;
 
   resetTransformation();
@@ -271,7 +295,6 @@ bool Doc::isMaskVisible() const
 {
   return
     (m_flags & kMaskVisible) && // The mask was not hidden by the user explicitly
-    m_mask &&                   // The mask does exist
     !m_mask->isEmpty();         // The mask is not empty
 }
 
@@ -298,10 +321,7 @@ void Doc::setTransformation(const Transformation& transform)
 
 void Doc::resetTransformation()
 {
-  if (m_mask)
-    m_transformation = Transformation(gfx::RectF(m_mask->bounds()));
-  else
-    m_transformation = Transformation();
+  m_transformation = Transformation(gfx::RectF(m_mask->bounds()));
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -345,8 +365,8 @@ void Doc::copyLayerContent(const Layer* sourceLayer0, Doc* destDoc, Layer* destL
 
       auto it = linked.find(sourceCel->data()->id());
       if (it != linked.end()) {
-        newCel.reset(Cel::createLink(it->second));
-        newCel->setFrame(sourceCel->frame());
+        newCel.reset(Cel::MakeLink(sourceCel->frame(),
+                                   it->second));
       }
       else {
         newCel.reset(create_cel_copy(sourceCel,
@@ -448,7 +468,8 @@ Doc* Doc::duplicate(DuplicateType type) const
             (spriteCopy,
              sourceSprite->root(),
              gfx::Rect(0, 0, sourceSprite->width(), sourceSprite->height()),
-             frame_t(0), sourceSprite->lastFrame());
+             frame_t(0), sourceSprite->lastFrame(),
+             Preferences::instance().experimental.newBlend());
 
         // Add and select the new flat layer
         spriteCopy->root()->addLayer(flatLayer);

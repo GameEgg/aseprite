@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2016-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -96,7 +96,10 @@ void PreviewCliDelegate::saveFile(Context* ctx, const CliOpenFile& cof)
   }
 
   if (cof.trim) {
-    std::cout << "  - Trim\n";
+    if (cof.trimByGrid)
+      std::cout << "  - Trim by Grid\n";
+    else
+      std::cout << "  - Trim\n";
   }
 
   if (cof.ignoreEmpty) {
