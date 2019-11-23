@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2019 Igara Studio S.A.
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -33,13 +33,14 @@
 #include "app/util/clipboard.h"
 #include "app/util/clipboard_native.h"
 #include "app/util/new_image_from_mask.h"
-#include "base/shared_ptr.h"
+#include "app/util/range_utils.h"
 #include "clip/clip.h"
 #include "doc/doc.h"
 #include "render/dithering.h"
 #include "render/ordered_dither.h"
 #include "render/quantization.h"
 
+#include <memory>
 #include <stdexcept>
 
 namespace app {
@@ -96,10 +97,10 @@ namespace clipboard {
 
 using namespace doc;
 
-static base::SharedPtr<Palette> clipboard_palette;
+static std::shared_ptr<Palette> clipboard_palette;
 static PalettePicks clipboard_picks;
 static ImageRef clipboard_image;
-static base::SharedPtr<Mask> clipboard_mask;
+static std::shared_ptr<Mask> clipboard_mask;
 static ClipboardRange clipboard_range;
 
 static ClipboardManager* g_instance = nullptr;
@@ -239,6 +240,28 @@ void get_document_range_info(Doc** document, DocRange* range)
   }
 }
 
+void clear_mask_from_cels(Tx& tx,
+                          Doc* doc,
+                          const CelList& cels,
+                          const bool deselectMask)
+{
+  for (Cel* cel : cels) {
+    ObjectId celId = cel->id();
+
+    tx(new cmd::ClearMask(cel));
+
+    // Get cel again just in case the cmd::ClearMask() called cmd::ClearCel()
+    cel = doc::get<Cel>(celId);
+    if (cel &&
+        cel->layer()->isTransparent()) {
+      tx(new cmd::TrimCel(cel));
+    }
+  }
+
+  if (deselectMask)
+    tx(new cmd::DeselectMask(doc));
+}
+
 void clear_content()
 {
   set_clipboard_image(nullptr, nullptr, nullptr, true, false);
@@ -257,14 +280,18 @@ void cut(ContextWriter& writer)
   else {
     {
       Tx tx(writer.context(), "Cut");
-      tx(new cmd::ClearMask(writer.cel()));
-
-      ASSERT(writer.cel());
-      if (writer.cel() &&
-          writer.cel()->layer()->isTransparent())
-        tx(new cmd::TrimCel(writer.cel()));
-
-      tx(new cmd::DeselectMask(writer.document()));
+      Site site = writer.context()->activeSite();
+      CelList cels;
+      if (site.range().enabled()) {
+        cels = get_unlocked_unique_cels(site.sprite(), site.range());
+      }
+      else if (site.cel()) {
+        cels.push_back(site.cel());
+      }
+      clear_mask_from_cels(tx,
+                           writer.document(),
+                           cels,
+                           true); // Deselect mask
       tx.commit();
     }
     writer.document()->generateMaskBoundaries();
@@ -369,6 +396,10 @@ void paste(Context* ctx, const bool interactive)
       }
 
       if (current_editor && interactive) {
+        // TODO we don't support pasting in multiple cels at the moment,
+        //      so we clear the range here.
+        App::instance()->timeline()->clearAndInvalidateRange();
+
         // Change to MovingPixelsState
         current_editor->pasteImage(src_image.get(),
                                    clipboard_mask.get());
@@ -465,50 +496,17 @@ void paste(Context* ctx, const bool interactive)
                 !dstLayer->isImage())
               continue;
 
-            // Maps a linked Cel in the original sprite with its
-            // corresponding copy in the new sprite. In this way
-            // we can.
-            std::map<Cel*, Cel*> relatedCels;
-
             frame_t dstFrame = dstFrameFirst;
             for (frame_t srcFrame : srcRange.selectedFrames()) {
               Cel* srcCel = srcLayer->cel(srcFrame);
-              Cel* srcLink = nullptr;
 
               if (srcCel && srcCel->image()) {
-                bool createCopy = true;
-
-                if (dstLayer->isContinuous() &&
-                    srcCel->links()) {
-                  srcLink = srcCel->link();
-                  if (!srcLink)
-                    srcLink = srcCel;
-
-                  if (srcLink) {
-                    Cel* dstRelated = relatedCels[srcLink];
-                    if (dstRelated) {
-                      createCopy = false;
-
-                      // Create a link from dstRelated
-                      api.copyCel(
-                        static_cast<LayerImage*>(dstLayer), dstRelated->frame(),
-                        static_cast<LayerImage*>(dstLayer), dstFrame);
-                    }
-                  }
-                }
-
-                if (createCopy) {
-                  api.copyCel(
-                    static_cast<LayerImage*>(srcLayer), srcFrame,
-                    static_cast<LayerImage*>(dstLayer), dstFrame);
-
-                  if (srcLink)
-                    relatedCels[srcLink] = dstLayer->cel(dstFrame);
-                }
+                api.copyCel(
+                  static_cast<LayerImage*>(srcLayer), srcFrame,
+                  static_cast<LayerImage*>(dstLayer), dstFrame);
               }
               else {
-                Cel* dstCel = dstLayer->cel(dstFrame);
-                if (dstCel)
+                if (Cel* dstCel = dstLayer->cel(dstFrame))
                   api.clearCel(dstCel);
               }
 

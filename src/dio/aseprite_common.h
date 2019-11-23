@@ -22,7 +22,7 @@
 #define ASE_FILE_CHUNK_COLOR_PROFILE        0x2007
 #define ASE_FILE_CHUNK_MASK                 0x2016
 #define ASE_FILE_CHUNK_PATH                 0x2017
-#define ASE_FILE_CHUNK_FRAME_TAGS           0x2018
+#define ASE_FILE_CHUNK_TAGS                 0x2018
 #define ASE_FILE_CHUNK_PALETTE              0x2019
 #define ASE_FILE_CHUNK_USER_DATA            0x2020
 #define ASE_FILE_CHUNK_SLICES               0x2021 // Deprecated chunk (used on dev versions only between v1.2-beta7 and v1.2-beta8)
@@ -74,6 +74,10 @@ struct AsepriteHeader {
   uint8_t pixel_height;
   int16_t pivot_x_percent;
   int16_t pivot_y_percent;
+  int16_t grid_x;
+  int16_t grid_y;
+  uint16_t grid_width;
+  uint16_t grid_height;
 };
 
 struct AsepriteFrameHeader {

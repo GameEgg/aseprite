@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (C) 2018  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -120,8 +120,8 @@ static void ase_file_write_color_profile(FILE* f,
 #if 0
 static void ase_file_write_mask_chunk(FILE* f, dio::AsepriteFrameHeader* frame_header, Mask* mask);
 #endif
-static void ase_file_write_frame_tags_chunk(FILE* f, dio::AsepriteFrameHeader* frame_header, const FrameTags* frameTags,
-                                            const frame_t fromFrame, const frame_t toFrame);
+static void ase_file_write_tags_chunk(FILE* f, dio::AsepriteFrameHeader* frame_header, const Tags* tags,
+                                      const frame_t fromFrame, const frame_t toFrame);
 static void ase_file_write_slice_chunks(FILE* f, dio::AsepriteFrameHeader* frame_header, const Slices& slices,
                                         const frame_t fromFrame, const frame_t toFrame);
 static void ase_file_write_slice_chunk(FILE* f, dio::AsepriteFrameHeader* frame_header, Slice* slice,
@@ -172,7 +172,7 @@ class AseFormat : public FileFormat {
       FILE_SUPPORT_LAYERS |
       FILE_SUPPORT_FRAMES |
       FILE_SUPPORT_PALETTES |
-      FILE_SUPPORT_FRAME_TAGS |
+      FILE_SUPPORT_TAGS |
       FILE_SUPPORT_BIG_PALETTES |
       FILE_SUPPORT_PALETTE_WITH_ALPHA;
   }
@@ -207,6 +207,12 @@ bool AseFormat::onLoad(FileOp* fop)
       sprite->colorSpace()->type() != gfx::ColorSpace::None) {
     fop->setEmbeddedColorProfile();
   }
+
+  // Sprite grid bounds will be set to empty (instead of
+  // doc::Sprite::DefaultGridBounds()) if the file doesn't contain an
+  // embedded grid bounds.
+  if (!sprite->gridBounds().isEmpty())
+    fop->setEmbeddedGridBounds();
 
   return true;
 }
@@ -304,10 +310,10 @@ bool AseFormat::onSave(FileOp* fop)
         ase_file_write_layers(f, &frame_header, child, 0);
 
       // Writer frame tags
-      if (sprite->frameTags().size() > 0)
-        ase_file_write_frame_tags_chunk(f, &frame_header, &sprite->frameTags(),
-                                        fop->roi().fromFrame(),
-                                        fop->roi().toFrame());
+      if (sprite->tags().size() > 0)
+        ase_file_write_tags_chunk(f, &frame_header, &sprite->tags(),
+                                  fop->roi().fromFrame(),
+                                  fop->roi().toFrame());
 
       // Writer slice chunks
       ase_file_write_slice_chunks(f, &frame_header,
@@ -373,6 +379,10 @@ static void ase_file_prepare_header(FILE* f, dio::AsepriteHeader* header, const 
   header->pixel_height = sprite->pixelRatio().h;
   header->pivot_x_percent = static_cast<int16_t>(100 * sprite->pivotX());
   header->pivot_y_percent = static_cast<int16_t>(100 * sprite->pivotY());
+  header->grid_x       = sprite->gridBounds().x;
+  header->grid_y       = sprite->gridBounds().y;
+  header->grid_width   = sprite->gridBounds().w;
+  header->grid_height  = sprite->gridBounds().h;
 }
 
 static void ase_file_write_header(FILE* f, dio::AsepriteHeader* header)
@@ -398,6 +408,10 @@ static void ase_file_write_header(FILE* f, dio::AsepriteHeader* header)
   fputc(header->pixel_height, f);
   fputw(header->pivot_x_percent, f);
   fputw(header->pivot_y_percent, f);
+  fputw(header->grid_x, f);
+  fputw(header->grid_y, f);
+  fputw(header->grid_width, f);
+  fputw(header->grid_height, f);
 
   fseek(f, header->pos+128, SEEK_SET);
 }
@@ -925,25 +939,28 @@ static void ase_file_write_mask_chunk(FILE* f, dio::AsepriteFrameHeader* frame_h
 }
 #endif
 
-static void ase_file_write_frame_tags_chunk(FILE* f, dio::AsepriteFrameHeader* frame_header, const FrameTags* frameTags,
-                                            const frame_t fromFrame, const frame_t toFrame)
+static void ase_file_write_tags_chunk(FILE* f,
+                                      dio::AsepriteFrameHeader* frame_header,
+                                      const Tags* tags,
+                                      const frame_t fromFrame,
+                                      const frame_t toFrame)
 {
-  ChunkWriter chunk(f, frame_header, ASE_FILE_CHUNK_FRAME_TAGS);
+  ChunkWriter chunk(f, frame_header, ASE_FILE_CHUNK_TAGS);
 
-  int tags = 0;
-  for (const FrameTag* tag : *frameTags) {
+  int ntags = 0;
+  for (const Tag* tag : *tags) {
     // Skip tags that are outside of the given ROI
     if (tag->fromFrame() > toFrame ||
         tag->toFrame() < fromFrame)
       continue;
-    ++tags;
+    ++ntags;
   }
 
-  fputw(tags, f);
+  fputw(ntags, f);
   fputl(0, f);  // 8 reserved bytes
   fputl(0, f);
 
-  for (const FrameTag* tag : *frameTags) {
+  for (const Tag* tag : *tags) {
     if (tag->fromFrame() > toFrame ||
         tag->toFrame() < fromFrame)
       continue;

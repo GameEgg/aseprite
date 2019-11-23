@@ -11,12 +11,11 @@
 
 #include "app/app.h"
 #include "app/cmd/set_palette.h"
-#include "app/commands/command.h"
+#include "app/commands/new_params.h"
 #include "app/console.h"
 #include "app/context.h"
 #include "app/context_access.h"
 #include "app/job.h"
-#include "app/modules/palettes.h"
 #include "app/pref/preferences.h"
 #include "app/sprite_job.h"
 #include "app/transaction.h"
@@ -25,13 +24,21 @@
 #include "doc/palette.h"
 #include "doc/sprite.h"
 #include "render/quantization.h"
-#include "ui/manager.h"
 
 #include "palette_from_sprite.xml.h"
 
+#include <algorithm>
+
 namespace app {
 
-class ColorQuantizationCommand : public Command {
+struct ColorQuantizationParams : public NewParams {
+  Param<bool> ui { this, true, "ui" };
+  Param<bool> withAlpha { this, true, "withAlpha" };
+  Param<int> maxColors { this, 256, "maxColors" };
+  Param<bool> useRange { this, false, "useRange" };
+};
+
+class ColorQuantizationCommand : public CommandWithNewParams<ColorQuantizationParams> {
 public:
   ColorQuantizationCommand();
 
@@ -41,37 +48,44 @@ protected:
 };
 
 ColorQuantizationCommand::ColorQuantizationCommand()
-  : Command(CommandId::ColorQuantization(), CmdRecordableFlag)
+  : CommandWithNewParams<ColorQuantizationParams>(
+      CommandId::ColorQuantization(),
+      CmdRecordableFlag)
 {
 }
 
-bool ColorQuantizationCommand::onEnabled(Context* context)
+bool ColorQuantizationCommand::onEnabled(Context* ctx)
 {
-  return context->checkFlags(ContextFlags::ActiveDocumentIsWritable);
+  return ctx->checkFlags(ContextFlags::ActiveDocumentIsWritable);
 }
 
-void ColorQuantizationCommand::onExecute(Context* context)
+void ColorQuantizationCommand::onExecute(Context* ctx)
 {
-  try {
+#ifdef ENABLE_UI
+  const bool ui = (params().ui() && ctx->isUIAvailable());
+#endif
+
+  bool withAlpha = params().withAlpha();
+  int maxColors = params().maxColors();
+  bool createPal;
+
+  Site site = ctx->activeSite();
+  PalettePicks entries = site.selectedColors();
+
+#ifdef ENABLE_UI
+  if (ui) {
     app::gen::PaletteFromSprite window;
-    PalettePicks entries;
-
-    Sprite* sprite;
-    frame_t frame;
-    Palette* curPalette;
     {
-      ContextReader reader(context);
-      Site site = context->activeSite();
-      sprite = site.sprite();
-      frame = site.frame();
-      curPalette = sprite->palette(frame);
+      ContextReader reader(ctx);
+      const Palette* curPalette = site.sprite()->palette(site.frame());
+
+      if (!params().withAlpha.isSet())
+        withAlpha = App::instance()->preferences().quantization.withAlpha();
 
       window.newPalette()->setSelected(true);
-      window.alphaChannel()->setSelected(
-        App::instance()->preferences().quantization.withAlpha());
-      window.ncolors()->setText("256");
+      window.alphaChannel()->setSelected(withAlpha);
+      window.ncolors()->setTextf("%d", maxColors);
 
-      ColorBar::instance()->getPaletteView()->getSelectedEntries(entries);
       if (entries.picks() > 1) {
         window.currentRange()->setTextf(
           "%s, %d color(s)",
@@ -91,26 +105,39 @@ void ColorQuantizationCommand::onExecute(Context* context)
     if (window.closer() != window.ok())
       return;
 
-    bool withAlpha = window.alphaChannel()->isSelected();
+    maxColors = window.ncolors()->textInt();
+    withAlpha = window.alphaChannel()->isSelected();
     App::instance()->preferences().quantization.withAlpha(withAlpha);
 
-    bool createPal = false;
     if (window.newPalette()->isSelected()) {
-      int n = window.ncolors()->textInt();
-      n = MAX(1, n);
-      entries = PalettePicks(n);
-      entries.all();
       createPal = true;
     }
-    else if (window.currentPalette()->isSelected()) {
-      entries.all();
+    else {
+      createPal = false;
+      if (window.currentPalette()->isSelected())
+        entries.all();
     }
-    if (entries.picks() == 0)
-      return;
+  }
+  else
+#endif // ENABLE_UI
+  {
+    createPal = (!params().useRange());
+  }
 
+  if (createPal) {
+    entries = PalettePicks(std::max(1, maxColors));
+    entries.all();
+  }
+  if (entries.picks() == 0)
+    return;
+
+  try {
+    ContextReader reader(ctx);
+    Sprite* sprite = site.sprite();
+    frame_t frame = site.frame();
+    const Palette* curPalette = site.sprite()->palette(frame);
     Palette tmpPalette(frame, entries.picks());
 
-    ContextReader reader(context);
     SpriteJob job(reader, "Color Quantization");
     const bool newBlend = Preferences::instance().experimental.newBlend();
     job.startJobWithCallback(
@@ -127,7 +154,7 @@ void ColorQuantizationCommand::onExecute(Context* context)
 
     std::unique_ptr<Palette> newPalette(
       new Palette(createPal ? tmpPalette:
-                              *get_current_palette()));
+                              *site.palette()));
 
     if (createPal) {
       entries = PalettePicks(newPalette->size());
@@ -143,9 +170,6 @@ void ColorQuantizationCommand::onExecute(Context* context)
 
     if (*curPalette != *newPalette)
       job.tx()(new cmd::SetPalette(sprite, frame, newPalette.get()));
-
-    set_current_palette(newPalette.get(), false);
-    ui::Manager::getDefault()->invalidate();
   }
   catch (const base::Exception& e) {
     Console::showException(e);

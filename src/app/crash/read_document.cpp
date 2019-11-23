@@ -25,8 +25,6 @@
 #include "doc/cel_io.h"
 #include "doc/cels_range.h"
 #include "doc/frame.h"
-#include "doc/frame_tag.h"
-#include "doc/frame_tag_io.h"
 #include "doc/image_io.h"
 #include "doc/layer.h"
 #include "doc/palette.h"
@@ -36,6 +34,8 @@
 #include "doc/sprite.h"
 #include "doc/string_io.h"
 #include "doc/subobjects_io.h"
+#include "doc/tag.h"
+#include "doc/tag_io.h"
 #include "fixmath/fixmath.h"
 
 #include <fstream>
@@ -320,9 +320,9 @@ private:
           return nullptr;
 
         ObjectId tagId = read32(s);
-        FrameTag* tag = loadObject<FrameTag*>("frtag", tagId, &Reader::readFrameTag);
+        Tag* tag = loadObject<Tag*>("frtag", tagId, &Reader::readTag);
         if (tag)
-          spr->frameTags().add(tag);
+          spr->tags().add(tag);
       }
     }
 
@@ -345,6 +345,11 @@ private:
     if (colorSpace)
       spr->setColorSpace(colorSpace);
 
+    // Read grid bounds
+    gfx::Rect gridBounds = readGridBounds(s);
+    if (!gridBounds.isEmpty())
+      spr->setGridBounds(gridBounds);
+
     return spr.release();
   }
 
@@ -362,6 +367,15 @@ private:
       type, flags, gamma, std::move(buf));
     colorSpace->setName(name);
     return colorSpace;
+  }
+
+  gfx::Rect readGridBounds(std::ifstream& s) {
+    gfx::Rect grid;
+    grid.x = (int16_t)read16(s);
+    grid.y = (int16_t)read16(s);
+    grid.w = read16(s);
+    grid.h = read16(s);
+    return grid;
   }
 
   // TODO could we use doc::read_layer() here?
@@ -423,8 +437,8 @@ private:
     return read_palette(s);
   }
 
-  FrameTag* readFrameTag(std::ifstream& s) {
-    return read_frame_tag(s, false);
+  Tag* readTag(std::ifstream& s) {
+    return read_tag(s, false);
   }
 
   Slice* readSlice(std::ifstream& s) {

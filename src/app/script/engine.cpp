@@ -25,6 +25,7 @@
 #include "doc/anidir.h"
 #include "doc/blend_mode.h"
 #include "doc/color_mode.h"
+#include "filters/target.h"
 
 #include <fstream>
 #include <sstream>
@@ -298,8 +299,8 @@ Engine::Engine()
   lua_newtable(L);
   lua_pushvalue(L, -1);
   lua_setglobal(L, "SpriteSheetDataFormat");
-  setfield_integer(L, "JSON_HASH", DocExporter::JsonHashDataFormat);
-  setfield_integer(L, "JSON_ARRAY", DocExporter::JsonArrayDataFormat);
+  setfield_integer(L, "JSON_HASH", SpriteSheetDataFormat::JsonHash);
+  setfield_integer(L, "JSON_ARRAY", SpriteSheetDataFormat::JsonArray);
   lua_pop(L, 1);
 
   lua_newtable(L);
@@ -317,6 +318,20 @@ Engine::Engine()
   setfield_integer(L, "ORIGIN", doc::BrushPattern::ALIGNED_TO_SRC);
   setfield_integer(L, "TARGET", doc::BrushPattern::ALIGNED_TO_DST);
   setfield_integer(L, "NONE", doc::BrushPattern::PAINT_BRUSH);
+  lua_pop(L, 1);
+
+  lua_newtable(L);
+  lua_pushvalue(L, -1);
+  lua_setglobal(L, "FilterChannels");
+  setfield_integer(L, "RED",   TARGET_RED_CHANNEL);
+  setfield_integer(L, "GREEN", TARGET_GREEN_CHANNEL);
+  setfield_integer(L, "BLUE",  TARGET_BLUE_CHANNEL);
+  setfield_integer(L, "ALPHA", TARGET_ALPHA_CHANNEL);
+  setfield_integer(L, "GRAY",  TARGET_GRAY_CHANNEL);
+  setfield_integer(L, "INDEX", TARGET_INDEX_CHANNEL);
+  setfield_integer(L, "RGB",   TARGET_RED_CHANNEL | TARGET_GREEN_CHANNEL | TARGET_BLUE_CHANNEL);
+  setfield_integer(L, "RGBA",   TARGET_RED_CHANNEL | TARGET_GREEN_CHANNEL | TARGET_BLUE_CHANNEL | TARGET_ALPHA_CHANNEL);
+  setfield_integer(L, "GRAYA",   TARGET_GRAY_CHANNEL | TARGET_ALPHA_CHANNEL);
   lua_pop(L, 1);
 
   // Register classes/prototypes
@@ -376,8 +391,15 @@ bool Engine::evalCode(const std::string& code,
       if (s)
         onConsolePrint(s);
       ok = false;
+      m_returnCode = -1;
     }
     else {
+      // Return code
+      if (lua_isinteger(L, -1))
+        m_returnCode = lua_tointeger(L, -1);
+      else
+        m_returnCode = 0;
+
       // Code was executed correctly
       if (m_printLastResult) {
         if (!lua_isnone(L, -1)) {
@@ -392,6 +414,7 @@ bool Engine::evalCode(const std::string& code,
   catch (const std::exception& ex) {
     onConsolePrint(ex.what());
     ok = false;
+    m_returnCode = -1;
   }
 
   // Collect script garbage.
@@ -405,6 +428,9 @@ bool Engine::evalFile(const std::string& filename,
   std::stringstream buf;
   {
     std::ifstream s(FSTREAM_PATH(filename));
+    // Returns false if we cannot open the file
+    if (!s)
+      return false;
     buf << s.rdbuf();
   }
   std::string absFilename = base::get_absolute_path(filename);

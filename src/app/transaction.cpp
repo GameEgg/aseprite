@@ -15,7 +15,9 @@
 #include "app/context_access.h"
 #include "app/doc.h"
 #include "app/doc_undo.h"
+#include "app/modules/palettes.h"
 #include "doc/sprite.h"
+#include "ui/manager.h"
 #include "ui/system.h"
 
 #define TX_TRACE(...)
@@ -24,9 +26,13 @@ namespace app {
 
 using namespace doc;
 
-Transaction::Transaction(Context* ctx, const std::string& label, Modification modification)
+Transaction::Transaction(
+  Context* ctx,
+  Doc* doc,
+  const std::string& label,
+  Modification modification)
   : m_ctx(ctx)
-  , m_doc(nullptr)
+  , m_doc(doc)
   , m_undo(nullptr)
   , m_cmds(nullptr)
   , m_changes(Changes::kNone)
@@ -35,10 +41,6 @@ Transaction::Transaction(Context* ctx, const std::string& label, Modification mo
            label.c_str(),
            modification == ModifyDocument ? "modifies document":
                                             "doesn't modify document");
-
-  m_doc = m_ctx->activeDocument();
-  if (!m_doc)
-    throw std::runtime_error("No active document to execute a transaction");
 
   m_doc->add_observer(this);
   m_undo = m_doc->undoHistory();
@@ -58,7 +60,7 @@ Transaction::~Transaction()
   try {
     // If it isn't committed, we have to rollback all changes.
     if (m_cmds)
-      rollback();
+      rollback(nullptr);
   }
   catch (...) {
     // Just avoid throwing an exception in the dtor (just in case
@@ -88,15 +90,43 @@ void Transaction::commit()
   TX_TRACE("TX: Commit <%s>\n", m_cmds->label().c_str());
 
   m_cmds->updateSpritePositionAfter();
+  const SpritePosition sprPos = m_cmds->spritePositionAfterExecute();
+
   m_undo->add(m_cmds);
   m_cmds = nullptr;
 
   // Process changes
-  if (int(m_changes) & int(Changes::kSelection))
+  if (int(m_changes) & int(Changes::kSelection)) {
+    m_doc->resetTransformation();
     m_doc->generateMaskBoundaries();
+  }
+
+#ifdef ENABLE_UI
+  if (int(m_changes) & int(Changes::kColorChange)) {
+    ASSERT(m_doc);
+    ASSERT(m_doc->sprite());
+
+    Palette* pal = m_doc->sprite()->palette(sprPos.frame());
+    ASSERT(pal);
+    if (pal)
+      set_current_palette(pal, false);
+    else
+      set_current_palette(nullptr, false);
+
+    if (m_ctx->isUIAvailable())
+      ui::Manager::getDefault()->invalidate();
+  }
+#endif
 }
 
-void Transaction::rollback()
+void Transaction::rollbackAndStartAgain()
+{
+  auto newCmds = m_cmds->moveToEmptyCopy();
+  rollback(newCmds);
+  newCmds->execute(m_ctx);
+}
+
+void Transaction::rollback(CmdTransaction* newCmds)
 {
   ASSERT(m_cmds);
   TX_TRACE("TX: Rollback <%s>\n", m_cmds->label().c_str());
@@ -104,7 +134,7 @@ void Transaction::rollback()
   m_cmds->undo();
 
   delete m_cmds;
-  m_cmds = nullptr;
+  m_cmds = newCmds;
 }
 
 void Transaction::execute(Cmd* cmd)
@@ -130,6 +160,16 @@ void Transaction::execute(Cmd* cmd)
 void Transaction::onSelectionChanged(DocEvent& ev)
 {
   m_changes = Changes(int(m_changes) | int(Changes::kSelection));
+}
+
+void Transaction::onColorSpaceChanged(DocEvent& ev)
+{
+  m_changes = Changes(int(m_changes) | int(Changes::kColorChange));
+}
+
+void Transaction::onPaletteChanged(DocEvent& ev)
+{
+  m_changes = Changes(int(m_changes) | int(Changes::kColorChange));
 }
 
 } // namespace app

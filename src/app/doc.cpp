@@ -26,12 +26,12 @@
 #include "app/util/create_cel_copy.h"
 #include "base/memory.h"
 #include "doc/cel.h"
-#include "doc/frame_tag.h"
 #include "doc/layer.h"
 #include "doc/mask.h"
 #include "doc/mask_boundaries.h"
 #include "doc/palette.h"
 #include "doc/sprite.h"
+#include "doc/tag.h"
 #include "os/display.h"
 #include "os/system.h"
 #include "ui/system.h"
@@ -48,6 +48,7 @@ Doc::Doc(Sprite* sprite)
   : m_ctx(nullptr)
   , m_flags(kMaskVisible)
   , m_undo(new DocUndo)
+  , m_transaction(nullptr)
   // Information about the file format used to load/save this document
   , m_format_options(nullptr)
   // Mask
@@ -86,6 +87,18 @@ void Doc::setContext(Context* ctx)
   }
 
   onContextChanged();
+}
+
+void Doc::setTransaction(Transaction* transaction)
+{
+  if (transaction) {
+    ASSERT(!m_transaction);
+    m_transaction = transaction;
+  }
+  else {
+    ASSERT(m_transaction);
+    m_transaction = nullptr;
+  }
 }
 
 DocApi Doc::getApi(Transaction& transaction)
@@ -131,6 +144,13 @@ void Doc::notifyColorSpaceChanged()
   DocEvent ev(this);
   ev.sprite(sprite());
   notify_observers<DocEvent&>(&DocObserver::onColorSpaceChanged, ev);
+}
+
+void Doc::notifyPaletteChanged()
+{
+  DocEvent ev(this);
+  ev.sprite(sprite());
+  notify_observers<DocEvent&>(&DocObserver::onPaletteChanged, ev);
 }
 
 void Doc::notifySpritePixelsModified(Sprite* sprite, const gfx::Region& region, frame_t frame)
@@ -247,13 +267,19 @@ bool Doc::isFullyBackedUp() const
 //////////////////////////////////////////////////////////////////////
 // Loaded options from file
 
-void Doc::setFormatOptions(const base::SharedPtr<FormatOptions>& format_options)
+void Doc::setFormatOptions(const FormatOptionsPtr& format_options)
 {
   m_format_options = format_options;
 }
 
 //////////////////////////////////////////////////////////////////////
 // Boundaries
+
+void Doc::destroyMaskBoundaries()
+{
+  m_maskBoundaries.reset();
+  notifySelectionBoundariesChanged();
+}
 
 void Doc::generateMaskBoundaries(const Mask* mask)
 {
@@ -434,8 +460,8 @@ Doc* Doc::duplicate(DuplicateType type) const
     spriteCopy->setFrameDuration(i, sourceSprite->frameDuration(i));
 
   // Copy frame tags
-  for (const FrameTag* tag : sourceSprite->frameTags())
-    spriteCopy->frameTags().add(new FrameTag(*tag));
+  for (const Tag* tag : sourceSprite->tags())
+    spriteCopy->tags().add(new Tag(*tag));
 
   // Copy color palettes
   {
@@ -529,14 +555,6 @@ void Doc::updateOSColorSpace(bool appWideSignal)
       context() &&
       context()->activeDocument() == this) {
     App::instance()->ColorSpaceChange();
-  }
-
-  if (ui::is_ui_thread()) {
-    // As the color space has changed, we might need to upate the
-    // current palette (because the color space conversion might be
-    // came from a cmd::ConvertColorProfile, so the palette might be
-    // changed). This might generate a PaletteChange() signal.
-    app_update_current_palette();
   }
 }
 

@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2016-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -13,11 +14,11 @@
 #include "app/restore_visible_layers.h"
 #include "app/site.h"
 #include "doc/anidir.h"
-#include "doc/frame_tag.h"
 #include "doc/layer.h"
 #include "doc/selected_frames.h"
 #include "doc/selected_layers.h"
 #include "doc/sprite.h"
+#include "doc/tag.h"
 #include "ui/combobox.h"
 
 namespace app {
@@ -49,7 +50,7 @@ std::string LayerListItem::buildName(const doc::Layer* layer)
   return name;
 }
 
-FrameListItem::FrameListItem(doc::FrameTag* tag)
+FrameListItem::FrameListItem(doc::Tag* tag)
   : ListItem("Tag: " + tag->name())
   , m_tag(tag)
 {
@@ -85,7 +86,7 @@ void fill_frames_combobox(const doc::Sprite* sprite, ui::ComboBox* frames, const
   if (defFrame == kSelectedFrames)
     frames->setSelectedItemIndex(i);
 
-  for (auto tag : sprite->frameTags()) {
+  for (auto tag : sprite->tags()) {
     // Don't allow to select empty frame tags
     if (tag->name().empty())
       continue;
@@ -109,18 +110,18 @@ void fill_anidir_combobox(ui::ComboBox* anidir, doc::AniDir defAnidir)
   anidir->setSelectedItemIndex(int(defAnidir));
 }
 
-void calculate_visible_layers(Site& site,
+void calculate_visible_layers(const Site& site,
                               const std::string& layersValue,
                               RestoreVisibleLayers& layersVisibility)
 {
   if (layersValue == kSelectedLayers) {
     if (!site.selectedLayers().empty()) {
       layersVisibility.showSelectedLayers(
-        site.sprite(),
+        const_cast<Sprite*>(site.sprite()),
         site.selectedLayers());
     }
     else {
-      layersVisibility.showLayer(site.layer());
+      layersVisibility.showLayer(const_cast<Layer*>(site.layer()));
     }
   }
   else if (layersValue != kAllFrames) {
@@ -134,11 +135,11 @@ void calculate_visible_layers(Site& site,
   }
 }
 
-doc::FrameTag* calculate_selected_frames(const Site& site,
-                                         const std::string& framesValue,
-                                         doc::SelectedFrames& selFrames)
+doc::Tag* calculate_selected_frames(const Site& site,
+                                    const std::string& framesValue,
+                                    doc::SelectedFrames& selFrames)
 {
-  doc::FrameTag* frameTag = nullptr;
+  doc::Tag* tag = nullptr;
 
   if (framesValue == kSelectedFrames) {
     if (!site.selectedFrames().empty()) {
@@ -149,17 +150,17 @@ doc::FrameTag* calculate_selected_frames(const Site& site,
     }
   }
   else if (framesValue != kAllFrames) {
-    frameTag = site.sprite()->frameTags().getByName(framesValue);
-    if (frameTag)
-      selFrames.insert(frameTag->fromFrame(),
-                       frameTag->toFrame());
+    tag = site.sprite()->tags().getByName(framesValue);
+    if (tag)
+      selFrames.insert(tag->fromFrame(),
+                       tag->toFrame());
     else
       selFrames.insert(0, site.sprite()->lastFrame());
   }
   else
     selFrames.insert(0, site.sprite()->lastFrame());
 
-  return frameTag;
+  return tag;
 }
 
 } // namespace app

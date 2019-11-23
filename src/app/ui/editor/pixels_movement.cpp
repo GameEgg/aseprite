@@ -27,6 +27,8 @@
 #include "app/ui/status_bar.h"
 #include "app/ui_context.h"
 #include "app/util/expand_cel_canvas.h"
+#include "app/util/new_image_from_mask.h"
+#include "app/util/range_utils.h"
 #include "base/bind.h"
 #include "base/pi.h"
 #include "base/vector2d.h"
@@ -43,11 +45,73 @@
 #include "gfx/region.h"
 #include "render/render.h"
 
+#include <algorithm>
+
+#if _DEBUG
+#define DUMP_INNER_CMDS() dumpInnerCmds()
+#else
+#define DUMP_INNER_CMDS()
+#endif
+
 namespace app {
 
 template<typename T>
 static inline const base::Vector2d<double> point2Vector(const gfx::PointT<T>& pt) {
   return base::Vector2d<double>(pt.x, pt.y);
+}
+
+PixelsMovement::InnerCmd::InnerCmd(InnerCmd&& c)
+  : type(None)
+{
+  std::swap(type, c.type);
+  std::swap(data, c.data);
+}
+
+PixelsMovement::InnerCmd::~InnerCmd()
+{
+  if (type == InnerCmd::Stamp)
+    delete data.stamp.transformation;
+}
+
+// static
+PixelsMovement::InnerCmd
+PixelsMovement::InnerCmd::MakeClear()
+{
+  InnerCmd c;
+  c.type = InnerCmd::Clear;
+  return c;
+}
+
+// static
+PixelsMovement::InnerCmd
+PixelsMovement::InnerCmd::MakeFlip(const doc::algorithm::FlipType flipType)
+{
+  InnerCmd c;
+  c.type = InnerCmd::Flip;
+  c.data.flip.type = flipType;
+  return c;
+}
+
+// static
+PixelsMovement::InnerCmd
+PixelsMovement::InnerCmd::MakeShift(const int dx, const int dy, const double angle)
+{
+  InnerCmd c;
+  c.type = InnerCmd::Shift;
+  c.data.shift.dx = dx;
+  c.data.shift.dy = dy;
+  c.data.shift.angle = angle;
+  return c;
+}
+
+// static
+PixelsMovement::InnerCmd
+PixelsMovement::InnerCmd::MakeStamp(const Transformation& t)
+{
+  InnerCmd c;
+  c.type = InnerCmd::Stamp;
+  c.data.stamp.transformation = new Transformation(t);
+  return c;
 }
 
 PixelsMovement::PixelsMovement(
@@ -59,16 +123,16 @@ PixelsMovement::PixelsMovement(
   : m_reader(context)
   , m_site(site)
   , m_document(site.document())
-  , m_sprite(site.sprite())
-  , m_layer(site.layer())
-  , m_transaction(context, operationName)
-  , m_setMaskCmd(nullptr)
+  , m_tx(context, operationName)
   , m_isDragging(false)
   , m_adjustPivot(false)
   , m_handle(NoHandle)
   , m_originalImage(Image::createCopy(moveThis))
   , m_opaque(false)
-  , m_maskColor(m_sprite->transparentColor())
+  , m_maskColor(m_site.sprite()->transparentColor())
+  , m_canHandleFrameChange(false)
+  , m_fastMode(false)
+  , m_needsRotSpriteRedraw(false)
 {
   Transformation transform(mask->bounds());
   set_pivot_from_preferences(transform);
@@ -76,8 +140,9 @@ PixelsMovement::PixelsMovement(
   m_initialData = transform;
   m_currentData = transform;
 
-  m_initialMask = new Mask(*mask);
-  m_currentMask = new Mask(*mask);
+  m_initialMask.reset(new Mask(*mask));
+  m_initialMask0.reset(new Mask(*mask));
+  m_currentMask.reset(new Mask(*mask));
 
   m_pivotVisConn =
     Preferences::instance().selection.pivotVisibility.AfterChange.connect(
@@ -96,57 +161,41 @@ PixelsMovement::PixelsMovement(
   redrawExtraImage();
   redrawCurrentMask();
 
-  // If the mask isn't in the document (e.g. it's from Paste command),
-  // we've to replace the document mask and generate its boundaries.
-  //
-  // This is really tricky. PixelsMovement is used in two situations:
-  // 1) When the current selection is transformed, and
-  // 2) when the user pastes the clipboard content.
-  //
-  // In the first case, the current document selection is used. And a
-  // cutMask() command could be called after PixelsMovement ctor. We
-  // need the following stack of Cmd instances in the Transaction:
-  // - cmd::ClearMask: clears the old mask)
-  // - cmd::SetMask (m_setMaskCmd): replaces the old mask with a new mask
-  // The new mask in m_setMaskCmd is replaced each time the mask is modified.
-  //
-  // In the second case, the mask isn't in the document, is a new mask
-  // used to paste the pixels, so we've to replace the document mask.
-  // The Transaction contains just a:
-  // - cmd::SetMask
-  //
-  // The main point here is that cmd::SetMask must be the last item in
-  // the Transaction using the mask (because we use cmd::SetMask::setNewMask()).
-  //
-  // TODO Simplify this code in some way or make explicit both usages
+  // If the mask is different than the mask from the document
+  // (e.g. it's from Paste command), we've to replace the document
+  // mask and generate its boundaries.
   if (mask != m_document->mask()) {
-    updateDocumentMask();
+    // Update document mask
+    m_tx(new cmd::SetMask(m_document, m_currentMask.get()));
+    m_document->generateMaskBoundaries(m_currentMask.get());
     update_screen_for_document(m_document);
   }
 }
 
-PixelsMovement::~PixelsMovement()
+bool PixelsMovement::editMultipleCels() const
 {
-  delete m_originalImage;
-  delete m_initialMask;
-  delete m_currentMask;
+  return
+    (m_site.range().enabled() &&
+     (Preferences::instance().selection.multicelWhenLayersOrFrames() ||
+      m_site.range().type() == DocRange::kCels));
+}
+
+void PixelsMovement::setFastMode(const bool fastMode)
+{
+  bool redraw = (m_fastMode && !fastMode);
+  m_fastMode = fastMode;
+  if (m_needsRotSpriteRedraw && redraw) {
+    redrawExtraImage();
+    update_screen_for_document(m_document);
+    m_needsRotSpriteRedraw = false;
+  }
 }
 
 void PixelsMovement::flipImage(doc::algorithm::FlipType flipType)
 {
-  // Flip the image.
-  doc::algorithm::flip_image(
-    m_originalImage,
-    gfx::Rect(gfx::Point(0, 0),
-              gfx::Size(m_originalImage->width(),
-                        m_originalImage->height())),
-    flipType);
+  m_innerCmds.push_back(InnerCmd::MakeFlip(flipType));
 
-  // Flip the mask.
-  doc::algorithm::flip_image(
-    m_initialMask->bitmap(),
-    gfx::Rect(gfx::Point(0, 0), m_initialMask->bounds().size()),
-    flipType);
+  flipOriginalImage(flipType);
 
   {
     ContextWriter writer(m_reader, 1000);
@@ -164,7 +213,9 @@ void PixelsMovement::flipImage(doc::algorithm::FlipType flipType)
 void PixelsMovement::rotate(double angle)
 {
   ContextWriter writer(m_reader, 1000);
-  m_currentData.angle(m_currentData.angle() + PI * -angle / 180.0);
+  m_currentData.angle(
+    base::fmod_radians(
+      m_currentData.angle() + PI * -angle / 180.0));
 
   m_document->setTransformation(m_currentData);
 
@@ -177,7 +228,10 @@ void PixelsMovement::rotate(double angle)
 
 void PixelsMovement::shift(int dx, int dy)
 {
-  doc::algorithm::shift_image(m_originalImage, dx, dy, m_currentData.angle());
+  const double angle = m_currentData.angle();
+  m_innerCmds.push_back(InnerCmd::MakeShift(dx, dy, angle));
+  shiftOriginalImage(dx, dy, angle);
+
   {
     ContextWriter writer(m_reader, 1000);
 
@@ -192,20 +246,39 @@ void PixelsMovement::shift(int dx, int dy)
 void PixelsMovement::trim()
 {
   ContextWriter writer(m_reader, 1000);
+  Cel* activeCel = m_site.cel();
+  bool restoreMask = false;
 
-  // writer.cel() can be nullptr when we paste in an empty cel
-  // (Ctrl+V) and cut (Ctrl+X) the floating pixels.
-  if (writer.cel() &&
-      writer.cel()->layer()->isTransparent())
-    m_transaction.execute(new cmd::TrimCel(writer.cel()));
+  // TODO this is similar to clear_mask_from_cels()
+
+  for (Cel* cel : getEditableCels()) {
+    if (cel != activeCel) {
+      if (!restoreMask) {
+        m_document->setMask(m_initialMask0.get());
+        restoreMask = true;
+      }
+      m_tx(new cmd::ClearMask(cel));
+    }
+    // Current cel (m_site.cel()) can be nullptr when we paste in an
+    // empty cel (Ctrl+V) and cut (Ctrl+X) the floating pixels.
+    if (cel &&
+        cel->layer()->isTransparent()) {
+      m_tx(new cmd::TrimCel(cel));
+    }
+  }
+
+  if (restoreMask)
+    updateDocumentMask();
 }
 
 void PixelsMovement::cutMask()
 {
+  m_innerCmds.push_back(InnerCmd::MakeClear());
+
   {
     ContextWriter writer(m_reader, 1000);
     if (writer.cel()) {
-      m_transaction.execute(new cmd::ClearMask(writer.cel()));
+      m_tx(new cmd::ClearMask(writer.cel()));
 
       // Do not trim here so we don't lost the information about all
       // linked cels related to "writer.cel()"
@@ -217,14 +290,7 @@ void PixelsMovement::cutMask()
 
 void PixelsMovement::copyMask()
 {
-  // Hide the mask (do not deselect it, it will be moved them using
-  // m_transaction.setMaskPosition)
-  Mask emptyMask;
-  {
-    ContextWriter writer(m_reader, 1000);
-    m_document->generateMaskBoundaries(&emptyMask);
-    update_screen_for_document(m_document);
-  }
+  hideDocumentMask();
 }
 
 void PixelsMovement::catchImage(const gfx::Point& pos, HandleType handle)
@@ -244,14 +310,7 @@ void PixelsMovement::catchImageAgain(const gfx::Point& pos, HandleType handle)
   m_catchPos = pos;
   m_handle = handle;
 
-  // Hide the mask (do not deselect it, it will be moved them using
-  // m_transaction.setMaskPosition)
-  Mask emptyMask;
-  {
-    ContextWriter writer(m_reader, 1000);
-    m_document->generateMaskBoundaries(&emptyMask);
-    update_screen_for_document(m_document);
-  }
+  hideDocumentMask();
 }
 
 void PixelsMovement::moveImage(const gfx::Point& pos, MoveModifier moveModifier)
@@ -284,8 +343,7 @@ void PixelsMovement::moveImage(const gfx::Point& pos, MoveModifier moveModifier)
 
       if ((moveModifier & SnapToGridMovement) == SnapToGridMovement) {
         // Snap the x1,y1 point to the grid.
-        gfx::Rect gridBounds = App::instance()
-          ->preferences().document(m_document).grid.bounds();
+        gfx::Rect gridBounds = m_document->sprite()->gridBounds();
         gfx::PointF gridOffset(
           snap_to_grid(
             gridBounds,
@@ -399,9 +457,7 @@ void PixelsMovement::moveImage(const gfx::Point& pos, MoveModifier moveModifier)
           - atan2((double)(-m_catchPos.y + abs_initial_pivot.y),
                   (double)(+m_catchPos.x - abs_initial_pivot.x));
 
-        // Put the angle in -180 to 180 range.
-        while (newAngle < -PI) newAngle += 2*PI;
-        while (newAngle > PI) newAngle -= 2*PI;
+        newAngle = base::fmod_radians(newAngle);
 
         // Is the "angle snap" is activated, we've to snap the angle
         // to common (pixel art) angles.
@@ -465,8 +521,10 @@ void PixelsMovement::moveImage(const gfx::Point& pos, MoveModifier moveModifier)
   // If "fullBounds" is empty is because the cel was not moved
   if (!fullBounds.isEmpty()) {
     // Notify the modified region.
-    m_document->notifySpritePixelsModified(m_sprite, gfx::Region(fullBounds),
-                                           m_site.frame());
+    m_document->notifySpritePixelsModified(
+      m_site.sprite(),
+      gfx::Region(fullBounds),
+      m_site.frame());
   }
 }
 
@@ -474,9 +532,11 @@ void PixelsMovement::getDraggedImageCopy(std::unique_ptr<Image>& outputImage,
                                          std::unique_ptr<Mask>& outputMask)
 {
   gfx::Rect bounds = m_currentData.transformedBounds();
-  std::unique_ptr<Image> image(Image::create(m_sprite->pixelFormat(), bounds.w, bounds.h));
+  std::unique_ptr<Image> image(
+    Image::create(
+      m_site.sprite()->pixelFormat(), bounds.w, bounds.h));
 
-  drawImage(image.get(), bounds.origin(), false);
+  drawImage(m_currentData, image.get(), bounds.origin(), false);
 
   // Draw mask without shrinking it, so the mask size is equal to the
   // "image" render.
@@ -503,40 +563,82 @@ void PixelsMovement::getDraggedImageCopy(std::unique_ptr<Image>& outputImage,
 
 void PixelsMovement::stampImage()
 {
+  stampImage(false);
+  m_innerCmds.push_back(InnerCmd::MakeStamp(m_currentData));
+}
+
+// finalStamp: true if we have to stamp the current transformation
+// (m_currentData) in all cels of the active range, or false if we
+// have to stamp the image only in the current cel.
+void PixelsMovement::stampImage(bool finalStamp)
+{
+  ContextWriter writer(m_reader, 1000);
+  Cel* currentCel = m_site.cel();
+
+  CelList cels;
+  if (finalStamp) {
+    cels = getEditableCels();
+  }
+  // Current cel (m_site.cel()) can be nullptr when we paste in an
+  // empty cel (Ctrl+V) and cut (Ctrl+X) the floating pixels.
+  else {
+    cels.push_back(currentCel);
+  }
+
+  for (Cel* target : cels) {
+    // We'll re-create the transformation for the other cels
+    if (target != currentCel) {
+      ASSERT(target);
+      m_site.layer(target->layer());
+      m_site.frame(target->frame());
+      ASSERT(m_site.cel() == target);
+
+      reproduceAllTransformationsWithInnerCmds();
+    }
+
+    redrawExtraImage();
+    stampExtraCelImage();
+  }
+
+  currentCel = m_site.cel();
+  if (currentCel &&
+      (m_site.layer() != currentCel->layer() ||
+       m_site.frame() != currentCel->frame())) {
+    m_site.layer(currentCel->layer());
+    m_site.frame(currentCel->frame());
+    redrawExtraImage();
+  }
+}
+
+void PixelsMovement::stampExtraCelImage()
+{
   const Cel* cel = m_extraCel->cel();
   const Image* image = m_extraCel->image();
 
-  ASSERT(cel && image);
+  // Expand the canvas to paste the image in the fully visible
+  // portion of sprite.
+  ExpandCelCanvas expand(
+    m_site, m_site.layer(),
+    TiledMode::NONE, m_tx,
+    ExpandCelCanvas::None);
 
-  {
-    ContextWriter writer(m_reader, 1000);
-    {
-      // Expand the canvas to paste the image in the fully visible
-      // portion of sprite.
-      ExpandCelCanvas expand(
-        m_site, m_site.layer(),
-        TiledMode::NONE, m_transaction,
-        ExpandCelCanvas::None);
+  // We cannot use cel->bounds() because cel->image() is nullptr
+  gfx::Rect modifiedRect(
+    cel->x(),
+    cel->y(),
+    image->width(),
+    image->height());
 
-      // We cannot use cel->bounds() because cel->image() is nullptr
-      gfx::Rect modifiedRect(
-        cel->x(),
-        cel->y(),
-        image->width(),
-        image->height());
+  gfx::Region modifiedRegion(modifiedRect);
+  expand.validateDestCanvas(modifiedRegion);
 
-      gfx::Region modifiedRegion(modifiedRect);
-      expand.validateDestCanvas(modifiedRegion);
+  expand.getDestCanvas()->copy(
+    image, gfx::Clip(
+      cel->x()-expand.getCel()->x(),
+      cel->y()-expand.getCel()->y(),
+      image->bounds()));
 
-      expand.getDestCanvas()->copy(
-        image, gfx::Clip(
-          cel->x()-expand.getCel()->x(),
-          cel->y()-expand.getCel()->y(),
-          image->bounds()));
-
-      expand.commit();
-    }
-  }
+  expand.commit();
 }
 
 void PixelsMovement::dropImageTemporarily()
@@ -586,10 +688,14 @@ void PixelsMovement::dropImage()
   m_isDragging = false;
 
   // Stamp the image in the current layer.
-  stampImage();
+  stampImage(true);
+
+  // Put the new mask
+  m_document->setMask(m_initialMask0.get());
+  m_tx(new cmd::SetMask(m_document, m_currentMask.get()));
 
   // This is the end of the whole undo transaction.
-  m_transaction.commit();
+  m_tx.commit();
 
   // Destroy the extra cel (this cel will be used by the drawing
   // cursor surely).
@@ -603,11 +709,16 @@ void PixelsMovement::discardImage(const CommitChangesOption commit,
   m_isDragging = false;
 
   // Deselect the mask (here we don't stamp the image)
-  if (keepMask == DontKeepMask)
-    m_transaction.execute(new cmd::DeselectMask(m_document));
+  m_document->setMask(m_initialMask0.get());
+  if (keepMask == DontKeepMask) {
+    m_tx(new cmd::DeselectMask(m_document));
+  }
+  else {
+    m_tx(new cmd::SetMask(m_document, m_currentMask.get()));
+  }
 
   if (commit == CommitChanges)
-    m_transaction.commit();
+    m_tx.commit();
 
   // Destroy the extra cel and regenerate the mask boundaries (we've
   // just deselect the mask).
@@ -648,47 +759,56 @@ void PixelsMovement::setMaskColor(bool opaque, color_t mask_color)
   update_screen_for_document(m_document);
 }
 
-void PixelsMovement::redrawExtraImage()
+void PixelsMovement::redrawExtraImage(Transformation* transformation)
 {
-  int t, opacity = (m_layer->isImage() ? static_cast<LayerImage*>(m_layer)->opacity(): 255);
+  if (!transformation)
+    transformation = &m_currentData;
+
+  int t, opacity = (m_site.layer()->isImage() ?
+                    static_cast<LayerImage*>(m_site.layer())->opacity(): 255);
   Cel* cel = m_site.cel();
   if (cel) opacity = MUL_UN8(opacity, cel->opacity(), t);
 
-  gfx::Rect bounds = m_currentData.transformedBounds();
+  gfx::Rect bounds = transformation->transformedBounds();
 
-  m_extraCel.reset(new ExtraCel);
+  if (!m_extraCel)
+    m_extraCel.reset(new ExtraCel);
+
   m_extraCel->create(m_document->sprite(), bounds, m_site.frame(), opacity);
   m_extraCel->setType(render::ExtraType::PATCH);
-  m_extraCel->setBlendMode(m_layer->isImage() ?
-                           static_cast<LayerImage*>(m_layer)->blendMode():
+  m_extraCel->setBlendMode(m_site.layer()->isImage() ?
+                           static_cast<LayerImage*>(m_site.layer())->blendMode():
                            BlendMode::NORMAL);
   m_document->setExtraCel(m_extraCel);
 
   // Draw the transformed pixels in the extra-cel which is the chunk
   // of pixels that the user is moving.
-  drawImage(m_extraCel->image(), bounds.origin(), true);
+  drawImage(*transformation, m_extraCel->image(), bounds.origin(), true);
 }
 
 void PixelsMovement::redrawCurrentMask()
 {
-  drawMask(m_currentMask, true);
+  drawMask(m_currentMask.get(), true);
 }
 
-void PixelsMovement::drawImage(doc::Image* dst, const gfx::Point& pt, bool renderOriginalLayer)
+void PixelsMovement::drawImage(
+  const Transformation& transformation,
+  doc::Image* dst, const gfx::Point& pt,
+  const bool renderOriginalLayer)
 {
   ASSERT(dst);
 
   Transformation::Corners corners;
-  m_currentData.transformBox(corners);
+  transformation.transformBox(corners);
   gfx::Rect bounds = corners.bounds();
 
-  dst->setMaskColor(m_sprite->transparentColor());
+  dst->setMaskColor(m_site.sprite()->transparentColor());
   dst->clear(dst->maskColor());
 
   if (renderOriginalLayer) {
     render::Render render;
     render.renderLayer(
-      dst, m_layer, m_site.frame(),
+      dst, m_site.layer(), m_site.frame(),
       gfx::Clip(bounds.x-pt.x, bounds.y-pt.y, bounds),
       BlendMode::SRC);
   }
@@ -708,7 +828,10 @@ void PixelsMovement::drawImage(doc::Image* dst, const gfx::Point& pt, bool rende
   }
   m_originalImage->setMaskColor(maskColor);
 
-  drawParallelogram(dst, m_originalImage, m_initialMask, corners, pt);
+  drawParallelogram(
+    transformation,
+    dst, m_originalImage.get(),
+    m_initialMask.get(), corners, pt);
 }
 
 void PixelsMovement::drawMask(doc::Mask* mask, bool shrink)
@@ -721,7 +844,8 @@ void PixelsMovement::drawMask(doc::Mask* mask, bool shrink)
   if (shrink)
     mask->freeze();
   clear_image(mask->bitmap(), 0);
-  drawParallelogram(mask->bitmap(),
+  drawParallelogram(m_currentData,
+                    mask->bitmap(),
                     m_initialMask->bitmap(),
                     nullptr,
                     corners, bounds.origin());
@@ -730,17 +854,27 @@ void PixelsMovement::drawMask(doc::Mask* mask, bool shrink)
 }
 
 void PixelsMovement::drawParallelogram(
+  const Transformation& transformation,
   doc::Image* dst, const doc::Image* src, const doc::Mask* mask,
   const Transformation::Corners& corners,
   const gfx::Point& leftTop)
 {
   tools::RotationAlgorithm rotAlgo = Preferences::instance().selection.rotationAlgorithm();
 
-  // If the angle and the scale weren't modified, we should use the
-  // fast rotation algorithm, as it's pixel-perfect match with the
-  // original selection when just a translation is applied.
-  if (m_currentData.angle() == 0.0 &&
-      gfx::Rect(m_currentData.bounds()).size() == src->size()) {
+  // When the scale isn't modified and we have no rotation or a
+  // right/straight-angle, we should use the fast rotation algorithm,
+  // as it's pixel-perfect match with the original selection when just
+  // a translation is applied.
+  double angle = 180.0*transformation.angle()/PI;
+  if (!Preferences::instance().selection.forceRotsprite() &&
+      (std::fabs(std::fmod(std::fabs(angle), 90.0)) < 0.01 ||
+       std::fabs(std::fmod(std::fabs(angle), 90.0)-90.0) < 0.01)) {
+    rotAlgo = tools::RotationAlgorithm::FAST;
+  }
+
+  // Don't use RotSprite if we are in "fast mode"
+  if (rotAlgo == tools::RotationAlgorithm::ROTSPRITE && m_fastMode) {
+    m_needsRotSpriteRedraw = true;
     rotAlgo = tools::RotationAlgorithm::FAST;
   }
 
@@ -809,14 +943,201 @@ void PixelsMovement::onRotationAlgorithmChange()
 
 void PixelsMovement::updateDocumentMask()
 {
-  if (!m_setMaskCmd) {
-    m_setMaskCmd = new cmd::SetMask(m_document, m_currentMask);
-    m_transaction.execute(m_setMaskCmd);
-  }
-  else
-    m_setMaskCmd->setNewMask(m_currentMask);
-
-  m_document->generateMaskBoundaries(m_currentMask);
+  m_document->setMask(m_currentMask.get());
+  m_document->generateMaskBoundaries(m_currentMask.get());
 }
+
+void PixelsMovement::hideDocumentMask()
+{
+  m_document->destroyMaskBoundaries();
+  update_screen_for_document(m_document);
+}
+
+void PixelsMovement::flipOriginalImage(const doc::algorithm::FlipType flipType)
+{
+  // Flip the image.
+  doc::algorithm::flip_image(
+    m_originalImage.get(),
+    gfx::Rect(gfx::Point(0, 0),
+              gfx::Size(m_originalImage->width(),
+                        m_originalImage->height())),
+    flipType);
+
+  // Flip the mask.
+  doc::algorithm::flip_image(
+    m_initialMask->bitmap(),
+    gfx::Rect(gfx::Point(0, 0), m_initialMask->bounds().size()),
+    flipType);
+}
+
+void PixelsMovement::shiftOriginalImage(const int dx, const int dy,
+                                        const double angle)
+{
+  doc::algorithm::shift_image(
+    m_originalImage.get(), dx, dy, angle);
+}
+
+// Returns the list of cels that will be transformed (the first item
+// in the list must be the current cel that was transformed if the cel
+// wasn't nullptr).
+CelList PixelsMovement::getEditableCels()
+{
+  CelList cels;
+
+  if (editMultipleCels()) {
+    cels = get_unlocked_unique_cels(
+      m_site.sprite(), m_site.range());
+  }
+  else {
+    // TODO This case is used in paste too, where the cel() can be
+    //      nullptr (e.g. we paste the clipboard image into an empty
+    //      cel).
+    cels.push_back(m_site.cel());
+    return cels;
+  }
+
+  // Current cel (m_site.cel()) can be nullptr when we paste in an
+  // empty cel (Ctrl+V) and cut (Ctrl+X) the floating pixels.
+  if (m_site.cel() &&
+      m_site.cel()->layer()->isEditable()) {
+    auto it = std::find(cels.begin(), cels.end(), m_site.cel());
+    if (it != cels.end())
+      cels.erase(it);
+    cels.insert(cels.begin(), m_site.cel());
+  }
+
+  return cels;
+}
+
+bool PixelsMovement::gotoFrame(const doc::frame_t deltaFrame)
+{
+  if (editMultipleCels()) {
+    Layer* layer = m_site.layer();
+    ASSERT(layer);
+
+    const doc::SelectedFrames frames = m_site.range().selectedFrames();
+    doc::frame_t initialFrame = m_site.frame();
+    doc::frame_t frame = initialFrame + deltaFrame;
+
+    if (frames.size() >= 2) {
+      for (; !frames.contains(frame) &&
+             !layer->cel(frame); frame+=deltaFrame) {
+        if (deltaFrame > 0 && frame > frames.lastFrame()) {
+          frame = frames.firstFrame();
+          break;
+        }
+        else if (deltaFrame < 0 && frame < frames.firstFrame()) {
+          frame = frames.lastFrame();
+          break;
+        }
+      }
+
+      if (frame == initialFrame ||
+          !frames.contains(frame) ||
+          // TODO At the moment we don't support going to an empty cel,
+          //      so we don't handle these cases
+          !layer->cel(frame)) {
+        return false;
+      }
+
+      // Rollback all the actions, go to the next/previous frame and
+      // reproduce all transformation again so the new frame is the
+      // preview for the transformation.
+      m_tx.rollbackAndStartAgain();
+
+      {
+        m_canHandleFrameChange = true;
+        {
+          ContextWriter writer(m_reader, 1000);
+          writer.context()->setActiveFrame(frame);
+          m_site.frame(frame);
+        }
+        m_canHandleFrameChange = false;
+      }
+
+      reproduceAllTransformationsWithInnerCmds();
+      return true;
+    }
+  }
+  return false;
+}
+
+// Reproduces all the inner commands in the active m_site
+void PixelsMovement::reproduceAllTransformationsWithInnerCmds()
+{
+  TRACEARGS("MOVPIXS: reproduceAllTransformationsWithInnerCmds",
+            "layer", m_site.layer()->name(),
+            "frame", m_site.frame());
+  DUMP_INNER_CMDS();
+
+  m_document->setMask(m_initialMask0.get());
+  m_initialMask->copyFrom(m_initialMask0.get());
+  m_originalImage.reset(
+    new_image_from_mask(
+      m_site, m_initialMask.get(),
+      Preferences::instance().experimental.newBlend()));
+
+  for (const InnerCmd& c : m_innerCmds) {
+    switch (c.type) {
+      case InnerCmd::Clear:
+        m_tx(new cmd::ClearMask(m_site.cel()));
+        break;
+      case InnerCmd::Flip:
+        flipOriginalImage(c.data.flip.type);
+        break;
+      case InnerCmd::Shift:
+        shiftOriginalImage(c.data.shift.dx,
+                           c.data.shift.dy,
+                           c.data.shift.angle);
+        break;
+      case InnerCmd::Stamp:
+        redrawExtraImage(c.data.stamp.transformation);
+        stampExtraCelImage();
+        break;
+    }
+  }
+
+  redrawExtraImage();
+  redrawCurrentMask();
+  updateDocumentMask();
+}
+
+#if _DEBUG
+void PixelsMovement::dumpInnerCmds()
+{
+  TRACEARGS("MOVPIXS: InnerCmds size=", m_innerCmds.size());
+  for (auto& c : m_innerCmds) {
+    switch (c.type) {
+      case InnerCmd::None:
+        TRACEARGS("MOVPIXS: - None");
+        break;
+      case InnerCmd::Clear:
+        TRACEARGS("MOVPIXS: - Clear");
+        break;
+      case InnerCmd::Flip:
+        TRACEARGS("MOVPIXS: - Flip",
+                  (c.data.flip.type == doc::algorithm::FlipHorizontal ? "Horizontal":
+                                                                        "Vertical"));
+        break;
+      case InnerCmd::Shift:
+        TRACEARGS("MOVPIXS: - Shift",
+                  "dx=", c.data.shift.dx,
+                  "dy=", c.data.shift.dy,
+                  "angle=", c.data.shift.angle);
+        break;
+      case InnerCmd::Stamp:
+        TRACEARGS("MOVPIXS: - Stamp",
+                  "angle=", c.data.stamp.transformation->angle(),
+                  "pivot=", c.data.stamp.transformation->pivot().x,
+                  c.data.stamp.transformation->pivot().y,
+                  "bounds=", c.data.stamp.transformation->bounds().x,
+                  c.data.stamp.transformation->bounds().y,
+                  c.data.stamp.transformation->bounds().w,
+                  c.data.stamp.transformation->bounds().h);
+        break;
+    }
+  }
+}
+#endif // _DEBUG
 
 } // namespace app

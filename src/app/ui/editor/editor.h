@@ -100,6 +100,8 @@ namespace app {
       MOUSE,                    // Zoom from cursor
     };
 
+    static ui::WidgetType Type();
+
     Editor(Doc* document, EditorFlags flags = kDefaultEditorFlags);
     ~Editor();
 
@@ -192,6 +194,7 @@ namespace app {
     gfx::Point mainTilePosition() const;
     void expandRegionByTiledMode(gfx::Region& rgn,
                                  const bool withProj) const;
+    void collapseRegionByTiledMode(gfx::Region& rgn) const;
 
     // Changes the scroll to see the given point as the center of the editor.
     void centerInSpritePoint(const gfx::Point& spritePos);
@@ -217,6 +220,13 @@ namespace app {
     // selection mode is the default one which prioritizes and easy
     // way to move the selection.
     bool canStartMovingSelectionPixels();
+
+    // Returns true if the range selected in the timeline should be
+    // kept. E.g. When we are moving/transforming pixels on multiple
+    // cels, the MovingPixelsState can handle previous/next frame
+    // commands, so it's nice to keep the timeline range intact while
+    // we are in the MovingPixelsState.
+    bool keepTimelineRange();
 
     // Returns the element that will be modified if the mouse is used
     // in the given position.
@@ -310,8 +320,8 @@ namespace app {
     void onSpritePixelRatioChanged(DocEvent& ev) override;
     void onBeforeRemoveLayer(DocEvent& ev) override;
     void onRemoveCel(DocEvent& ev) override;
-    void onAddFrameTag(DocEvent& ev) override;
-    void onRemoveFrameTag(DocEvent& ev) override;
+    void onAddTag(DocEvent& ev) override;
+    void onRemoveTag(DocEvent& ev) override;
     void onRemoveSlice(DocEvent& ev) override;
 
     // ActiveToolObserver impl
@@ -447,8 +457,6 @@ namespace app {
     // (search for Render::setPreviewImage()).
     static EditorRender* m_renderEngine;
   };
-
-  ui::WidgetType editor_type();
 
 } // namespace app
 

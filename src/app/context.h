@@ -25,6 +25,7 @@
 
 namespace doc {
   class Layer;
+  class PalettePicks;
 }
 
 namespace app {
@@ -32,7 +33,6 @@ namespace app {
   class Command;
   class Doc;
   class DocView;
-  class Transaction;
 
   class CommandPreconditionException : public base::Exception {
   public:
@@ -85,6 +85,7 @@ namespace app {
     void setActiveDocument(Doc* document);
     void setActiveLayer(doc::Layer* layer);
     void setActiveFrame(doc::frame_t frame);
+    void setSelectedColors(const doc::PalettePicks& picks);
     bool hasModifiedDocuments() const;
     void notifyActiveSiteChanged();
 
@@ -94,10 +95,6 @@ namespace app {
     virtual DocView* getFirstDocView(Doc* document) const {
       return nullptr;
     }
-
-    // Sets active/running transaction.
-    void setTransaction(Transaction* transaction);
-    Transaction* transaction() { return m_transaction; }
 
     obs::signal<void (CommandExecutionEvent&)> BeforeCommandExecution;
     obs::signal<void (CommandExecutionEvent&)> AfterCommandExecution;
@@ -111,6 +108,7 @@ namespace app {
     virtual void onSetActiveDocument(Doc* doc);
     virtual void onSetActiveLayer(doc::Layer* layer);
     virtual void onSetActiveFrame(const doc::frame_t frame);
+    virtual void onSetSelectedColors(const doc::PalettePicks& picks);
     virtual void onCloseDocument(Doc* doc);
 
     Doc* lastSelectedDoc() { return m_lastSelectedDoc; }
@@ -121,7 +119,6 @@ namespace app {
     Docs m_docs;
     ContextFlags m_flags;       // Last updated flags.
     Doc* m_lastSelectedDoc;
-    Transaction* m_transaction;
     mutable std::unique_ptr<ActiveSiteHandler> m_activeSiteHandler;
 
     DISABLE_COPYING(Context);

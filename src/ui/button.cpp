@@ -1,4 +1,5 @@
 // Aseprite UI Library
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This file is released under the terms of the MIT license.
@@ -95,15 +96,12 @@ bool ButtonBase::onProcessMessage(Message* msg)
             }
           }
 
-          // Check if the user pressed mnemonic.
-          if (mnemonicPressed) {
-            setSelected(true);
-            return true;
-          }
-          // Magnetic widget catches ENTERs
-          else if (isFocusMagnet() &&
-                   ((scancode == kKeyEnter) ||
-                    (scancode == kKeyEnterPad))) {
+          if (// Check if the user pressed mnemonic
+              mnemonicPressed ||
+              // Magnetic widget catches ENTERs
+              (isFocusMagnet() &&
+               ((scancode == kKeyEnter) ||
+                (scancode == kKeyEnterPad)))) {
             manager()->setFocus(this);
 
             // Dispatch focus movement messages (because the buttons
@@ -116,8 +114,8 @@ bool ButtonBase::onProcessMessage(Message* msg)
         }
         // For kCheckWidget or kRadioWidget
         else {
-          /* if the widget has the focus and the user press space or
-             if the user press Alt+the underscored letter of the button */
+          // If the widget has the focus and the user press space or
+          // if the user press Alt+the underscored letter of the button
           if ((hasFocus() && (scancode == kKeySpace)) || mnemonicPressed) {
             if (m_behaviorType == kCheckWidget) {
               // Swap the select status
@@ -137,12 +135,23 @@ bool ButtonBase::onProcessMessage(Message* msg)
     }
 
     case kKeyUpMessage:
-      if (isEnabled()) {
-        if (m_behaviorType == kButtonWidget) {
-          if (isSelected()) {
-            generateButtonSelectSignal();
+      if (isEnabled() && hasFocus()) {
+        switch (m_behaviorType) {
+
+          case kButtonWidget:
+            if (isSelected()) {
+              generateButtonSelectSignal();
+              return true;
+            }
+            break;
+
+          case kCheckWidget: {
+            // Fire onClick() event
+            Event ev(this);
+            onClick(ev);
             return true;
           }
+
         }
       }
       break;

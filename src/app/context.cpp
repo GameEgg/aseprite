@@ -30,7 +30,6 @@ namespace app {
 Context::Context()
   : m_docs(this)
   , m_lastSelectedDoc(nullptr)
-  , m_transaction(nullptr)
 {
   m_docs.add_observer(this);
 }
@@ -79,6 +78,11 @@ void Context::setActiveLayer(doc::Layer* layer)
 void Context::setActiveFrame(const doc::frame_t frame)
 {
   onSetActiveFrame(frame);
+}
+
+void Context::setSelectedColors(const doc::PalettePicks& picks)
+{
+  onSetSelectedColors(picks);
 }
 
 bool Context::hasModifiedDocuments() const
@@ -217,16 +221,10 @@ void Context::onSetActiveFrame(const doc::frame_t frame)
     activeSiteHandler()->setActiveFrameInDoc(m_lastSelectedDoc, frame);
 }
 
-void Context::setTransaction(Transaction* transaction)
+void Context::onSetSelectedColors(const doc::PalettePicks& picks)
 {
-  if (transaction) {
-    ASSERT(!m_transaction);
-    m_transaction = transaction;
-  }
-  else {
-    ASSERT(m_transaction);
-    m_transaction = nullptr;
-  }
+  if (m_lastSelectedDoc)
+    activeSiteHandler()->setSelectedColorsInDoc(m_lastSelectedDoc, picks);
 }
 
 ActiveSiteHandler* Context::activeSiteHandler() const

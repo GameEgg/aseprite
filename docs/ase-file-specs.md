@@ -71,7 +71,12 @@ A 128-byte header (same as FLC/FLI header, but with other magic number):
     BYTE        Pixel width (pixel ratio is "pixel width/pixel height").
                 If this or pixel height field is zero, pixel ratio is 1:1
     BYTE        Pixel height
-    BYTE[92]    For future (set to zero)
+    SHORT       X position of the grid
+    SHORT       Y position of the grid
+    WORD        Grid width (zero if there is no grid, grid size
+                is 16x16 on Aseprite by default)
+    WORD        Grid height (zero if there is no grid)
+    BYTE[84]    For future (set to zero)
 
 ## Frames
 
@@ -247,7 +252,7 @@ Color profile for RGB or grayscale values.
 
 Never used.
 
-### Frame Tags Chunk (0x2018)
+### Tags Chunk (0x2018)
 
     WORD        Number of tags
     BYTE[8]     For future (set to zero)

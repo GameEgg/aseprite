@@ -13,6 +13,8 @@
 #include "fmt/format.h"
 #include "gfx/point.h"
 
+#include <cmath>
+
 namespace app {
 namespace script {
 
@@ -25,13 +27,31 @@ gfx::Point Point_new(lua_State* L, int index)
   if (auto pt2 = may_get_obj<gfx::Point>(L, index)) {
     pt = *pt2;
   }
-  // Convert { x, y } into a Point
+  // Convert {x=int,y=int} or {int,int} into a Point
   else if (lua_istable(L, index)) {
-    lua_getfield(L, index, "x");
-    lua_getfield(L, index, "y");
-    pt.x = lua_tointeger(L, -2);
-    pt.y = lua_tointeger(L, -1);
-    lua_pop(L, 2);
+    const int type = lua_getfield(L, index, "x");
+    if (type != LUA_TNONE &&
+        type != LUA_TNIL) {
+      lua_getfield(L, index, "y");
+      pt.x = lua_tointeger(L, -2);
+      pt.y = lua_tointeger(L, -1);
+      lua_pop(L, 2);
+    }
+    else {
+      lua_pop(L, 1);
+
+      // TODO Investigate this further: why we cannot use two
+      // lua_geti() calls and then lua_pop(L, 2) when we are iterating
+      // points in a table defined like {{0,0},{32,32}}
+
+      lua_geti(L, index, 1);
+      pt.x = lua_tointeger(L, -1);
+      lua_pop(L, 1);
+
+      lua_geti(L, index, 2);
+      pt.y = lua_tointeger(L, -1);
+      lua_pop(L, 1);
+    }
   }
   else {
     pt.x = lua_tointeger(L, index);
@@ -68,6 +88,80 @@ int Point_tostring(lua_State* L)
   return 1;
 }
 
+int Point_unm(lua_State* L)
+{
+  const auto pt = get_obj<gfx::Point>(L, 1);
+  push_obj(L, -(*pt));
+  return 1;
+}
+
+int Point_add(lua_State* L)
+{
+  gfx::Point result(0, 0);
+  if (lua_isuserdata(L, 1))
+    result += *get_obj<gfx::Point>(L, 1);
+  else
+    result += lua_tointeger(L, 1);
+  if (lua_isuserdata(L, 2))
+    result += *get_obj<gfx::Point>(L, 2);
+  else
+    result += lua_tointeger(L, 2);
+  push_obj(L, result);
+  return 1;
+}
+
+int Point_sub(lua_State* L)
+{
+  gfx::Point result = *get_obj<gfx::Point>(L, 1);
+  if (lua_isuserdata(L, 2))
+    result -= *get_obj<gfx::Point>(L, 2);
+  else
+    result -= lua_tointeger(L, 2);
+  push_obj(L, result);
+  return 1;
+}
+
+int Point_mul(lua_State* L)
+{
+  gfx::Point result = *get_obj<gfx::Point>(L, 1);
+  result *= lua_tointeger(L, 2);
+  push_obj(L, result);
+  return 1;
+}
+
+int Point_div(lua_State* L)
+{
+  gfx::Point result = *get_obj<gfx::Point>(L, 1);
+  const int value = lua_tointeger(L, 2);
+  if (value == 0)
+    return luaL_error(L, "attempt to divide by zero");
+  result /= value;
+  push_obj(L, result);
+  return 1;
+}
+
+int Point_mod(lua_State* L)
+{
+  gfx::Point result = *get_obj<gfx::Point>(L, 1);
+  const int value = lua_tointeger(L, 2);
+  if (value == 0)
+    return luaL_error(L, "attempt to divide by zero");
+  result.x %= value;
+  result.y %= value;
+  push_obj(L, result);
+  return 1;
+}
+
+int Point_pow(lua_State* L)
+{
+  gfx::Point result = *get_obj<gfx::Point>(L, 1);
+  const int value = lua_tointeger(L, 2);
+  result.x = std::pow(result.x, value);
+  result.y = std::pow(result.y, value);
+  push_obj(L, result);
+  return 1;
+}
+
 int Point_get_x(lua_State* L)
 {
   const auto pt = get_obj<gfx::Point>(L, 1);
@@ -100,6 +194,14 @@ const luaL_Reg Point_methods[] = {
   { "__gc", Point_gc },
   { "__eq", Point_eq },
   { "__tostring", Point_tostring },
+  { "__unm", Point_unm },
+  { "__add", Point_add },
+  { "__sub", Point_sub },
+  { "__mul", Point_mul },
+  { "__div", Point_div },
+  { "__mod", Point_mod },
+  { "__pow", Point_pow },
+  { "__idiv", Point_div },
   { nullptr, nullptr }
 };
 

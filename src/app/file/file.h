@@ -10,17 +10,19 @@
 #pragma once
 
 #include "app/color.h"
+#include "app/doc.h"
 #include "app/file/file_op_config.h"
+#include "app/file/format_options.h"
 #include "app/pref/preferences.h"
 #include "base/mutex.h"
 #include "base/paths.h"
-#include "base/shared_ptr.h"
 #include "doc/frame.h"
 #include "doc/image_ref.h"
 #include "doc/pixel_format.h"
 #include "doc/selected_frames.h"
 
 #include <cstdio>
+#include <memory>
 #include <string>
 
 // Flags for FileOp::createLoadDocumentOperation()
@@ -33,7 +35,7 @@
 #define FILE_LOAD_CREATE_PALETTE        0x00000040
 
 namespace doc {
-  class FrameTag;
+  class Tag;
 }
 
 namespace doc {
@@ -49,9 +51,7 @@ namespace doc {
 namespace app {
 
   class Context;
-  class Doc;
   class FileFormat;
-  class FormatOptions;
 
   using namespace doc;
 
@@ -72,13 +72,13 @@ namespace app {
     FileOpROI();
     FileOpROI(const Doc* doc,
               const std::string& sliceName,
-              const std::string& frameTagName,
+              const std::string& tagName,
               const doc::SelectedFrames& selFrames,
-              const bool adjustByFrameTag);
+              const bool adjustByTag);
 
     const Doc* document() const { return m_document; }
     doc::Slice* slice() const { return m_slice; }
-    doc::FrameTag* frameTag() const { return m_frameTag; }
+    doc::Tag* tag() const { return m_tag; }
     doc::frame_t fromFrame() const { return m_selFrames.firstFrame(); }
     doc::frame_t toFrame() const { return m_selFrames.lastFrame(); }
     const doc::SelectedFrames& selectedFrames() const { return m_selFrames; }
@@ -90,7 +90,7 @@ namespace app {
   private:
     const Doc* m_document;
     doc::Slice* m_slice;
-    doc::FrameTag* m_frameTag;
+    doc::Tag* m_tag;
     doc::SelectedFrames m_selFrames;
   };
 
@@ -143,8 +143,39 @@ namespace app {
     void postLoad();
 
     // Special options specific to the file format.
-    base::SharedPtr<FormatOptions> formatOptions() const;
-    void setFormatOptions(const base::SharedPtr<FormatOptions>& opts);
+    FormatOptionsPtr formatOptions() const {
+      return m_formatOptions;
+    }
+
+    // Options to save the document. This function doesn't return
+    // nullptr.
+    template<typename T>
+    std::shared_ptr<T> formatOptionsForSaving() const {
+      auto opts = std::dynamic_pointer_cast<T>(m_formatOptions);
+      if (!opts)
+        opts = std::make_shared<T>();
+      ASSERT(opts);
+      return opts;
+    }
+
+    // Options from the document when it was loaded. This function
+    // doesn't return nullptr.
+    template<typename T>
+    std::shared_ptr<T> formatOptionsOfDocument() const {
+      // We use the dynamic cast because the document format options
+      // could be an instance of another class than T.
+      auto opts = std::dynamic_pointer_cast<T>(m_document->formatOptions());
+      if (!opts) {
+        // If the document doesn't have format options (or the type
+        // doesn't matches T), we create default format options for
+        // this file.
+        opts = std::make_shared<T>();
+      }
+      ASSERT(opts);
+      return opts;
+    }
+
+    void setLoadedFormatOptions(const FormatOptionsPtr& opts);
 
     // Helpers for file decoder/encoder (FileFormat) with
     // FILE_SUPPORT_SEQUENCES flag.
@@ -177,6 +208,9 @@ namespace app {
 
     void setEmbeddedColorProfile() { m_embeddedColorProfile = true; }
     bool hasEmbeddedColorProfile() const { return m_embeddedColorProfile; }
+
+    void setEmbeddedGridBounds() { m_embeddedGridBounds = true; }
+    bool hasEmbeddedGridBounds() const { return m_embeddedGridBounds; }
 
     bool newBlend() const { return m_config.newBlend; }
 
@@ -212,9 +246,13 @@ namespace app {
     // True if the file contained a color profile when it was loaded.
     bool m_embeddedColorProfile;
 
+    // True if the file contained a the grid bounds inside.
+    bool m_embeddedGridBounds;
+
     FileOpConfig m_config;
 
-    base::SharedPtr<FormatOptions> m_formatOptions;
+    // Options
+    FormatOptionsPtr m_formatOptions;
 
     // Data for sequences.
     struct {

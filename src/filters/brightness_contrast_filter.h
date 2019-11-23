@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2017  David Capello
 //
 // This program is distributed under the terms of
@@ -17,27 +18,28 @@
 
 namespace filters {
 
-  class BrightnessContrastFilter : public Filter {
+  class BrightnessContrastFilter : public FilterWithPalette {
   public:
     BrightnessContrastFilter();
 
+    double brightness() const { return m_brightness; }
+    double contrast() const { return m_contrast; }
     void setBrightness(double brightness);
     void setContrast(double contrast);
 
     // Filter implementation
-    const char* getName();
-    void applyToRgba(FilterManager* filterMgr);
-    void applyToGrayscale(FilterManager* filterMgr);
-    void applyToIndexed(FilterManager* filterMgr);
+    const char* getName() override;
+    void applyToRgba(FilterManager* filterMgr) override;
+    void applyToGrayscale(FilterManager* filterMgr) override;
+    void applyToIndexed(FilterManager* filterMgr) override;
 
   private:
-    void applyToPalette(FilterManager* filterMgr);
+    void onApplyToPalette(FilterManager* filterMgr,
+                          const doc::PalettePicks& picks) override;
     void applyFilterToRgb(const Target target, doc::color_t& color);
     void updateMap();
 
     double m_brightness, m_contrast;
-    doc::PalettePicks m_picks;
-    bool m_usePalette;
     std::vector<int> m_cmap;
   };
 

@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -8,8 +9,8 @@
 #define APP_FILE_FILE_FORMAT_H_INCLUDED
 #pragma once
 
+#include "app/file/format_options.h"
 #include "base/paths.h"
-#include "base/shared_ptr.h"
 #include "dio/file_format.h"
 
 #include <vector>
@@ -26,7 +27,7 @@
 #define FILE_SUPPORT_PALETTES           0x00000200
 #define FILE_SUPPORT_SEQUENCES          0x00000400
 #define FILE_SUPPORT_GET_FORMAT_OPTIONS 0x00000800
-#define FILE_SUPPORT_FRAME_TAGS         0x00001000
+#define FILE_SUPPORT_TAGS               0x00001000
 #define FILE_SUPPORT_BIG_PALETTES       0x00002000 // Palettes w/more than 256 colors
 #define FILE_SUPPORT_PALETTE_WITH_ALPHA 0x00004000
 
@@ -65,8 +66,8 @@ namespace app {
 
     // Returns extra options for this format. It can return != NULL
     // only if flags() returns FILE_SUPPORT_GET_FORMAT_OPTIONS.
-    base::SharedPtr<FormatOptions> getFormatOptions(FileOp* fop) {
-      return onGetFormatOptions(fop);
+    FormatOptionsPtr askUserForFormatOptions(FileOp* fop) {
+      return onAskUserForFormatOptions(fop);
     }
 
     // Returns true if this file format supports the given flag.
@@ -87,8 +88,8 @@ namespace app {
 #endif
     virtual void onDestroyData(FileOp* fop) { }
 
-    virtual base::SharedPtr<FormatOptions> onGetFormatOptions(FileOp* fop) {
-      return base::SharedPtr<FormatOptions>(0);
+    virtual FormatOptionsPtr onAskUserForFormatOptions(FileOp* fop) {
+      return FormatOptionsPtr(nullptr);
     }
 
   };

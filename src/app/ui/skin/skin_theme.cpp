@@ -28,7 +28,6 @@
 #include "base/bind.h"
 #include "base/fs.h"
 #include "base/log.h"
-#include "base/shared_ptr.h"
 #include "base/string.h"
 #include "gfx/border.h"
 #include "gfx/point.h"
@@ -149,7 +148,7 @@ static FontData* load_font(std::map<std::string, FontData*>& fonts,
     font->setAntialias(antialias);
 
     if (!fontFilename.empty())
-      LOG(VERBOSE) << "THEME: Font file '" << fontFilename << "' not found\n";
+      LOG(VERBOSE) << "THEME: Font file '" << fontFilename << "' found\n";
   }
   else {
     throw base::Exception("Invalid type=\"%s\" in '%s' for <font name=\"%s\" ...>\n",
@@ -726,7 +725,7 @@ os::Surface* SkinTheme::sliceSheet(os::Surface* sur, const gfx::Rect& bounds)
 
 os::Font* SkinTheme::getWidgetFont(const Widget* widget) const
 {
-  SkinPropertyPtr skinPropery = widget->getProperty(SkinProperty::Name);
+  auto skinPropery = std::static_pointer_cast<SkinProperty>(widget->getProperty(SkinProperty::Name));
   if (skinPropery && skinPropery->hasMiniFont())
     return getMiniFont();
   else
@@ -951,7 +950,7 @@ void SkinTheme::paintEntry(PaintEvent& ev)
   g->fillRect(BGCOLOR, bounds);
 
   bool isMiniLook = false;
-  SkinPropertyPtr skinPropery = widget->getProperty(SkinProperty::Name);
+  auto skinPropery = std::static_pointer_cast<SkinProperty>(widget->getProperty(SkinProperty::Name));
   if (skinPropery)
     isMiniLook = (skinPropery->getLook() == MiniLook);
 
@@ -1260,11 +1259,11 @@ void SkinTheme::paintSlider(PaintEvent& ev)
   // customized background (e.g. RGB sliders)
   ISliderBgPainter* bgPainter = NULL;
 
-  SkinPropertyPtr skinPropery = widget->getProperty(SkinProperty::Name);
+  const auto skinPropery = std::static_pointer_cast<SkinProperty>(widget->getProperty(SkinProperty::Name));
   if (skinPropery)
     isMiniLook = (skinPropery->getLook() == MiniLook);
 
-  SkinSliderPropertyPtr skinSliderPropery = widget->getProperty(SkinSliderProperty::Name);
+  const auto skinSliderPropery = std::static_pointer_cast<SkinSliderProperty>(widget->getProperty(SkinSliderProperty::Name));
   if (skinSliderPropery)
     bgPainter = skinSliderPropery->getBgPainter();
 

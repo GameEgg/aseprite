@@ -10,8 +10,9 @@
 #pragma once
 
 #include "base/disable_copying.h"
-#include "base/shared_ptr.h"
 #include "gfx/point.h"
+
+#include <memory>
 
 namespace gfx {
   class Region;
@@ -24,7 +25,7 @@ namespace ui {
 }
 
 namespace doc {
-  class FrameTag;
+  class Tag;
 }
 
 namespace app {
@@ -77,6 +78,9 @@ namespace app {
     // other drawing tool).
     virtual void onActiveToolChange(Editor* editor, tools::Tool* tool) { }
 
+    // Called when the editor gets the focus.
+    virtual void onEditorGotFocus(Editor* editor) { }
+
     // Called when the user presses a mouse button over the editor.
     virtual bool onMouseDown(Editor* editor, ui::MouseMessage* msg) { return false; }
 
@@ -126,13 +130,13 @@ namespace app {
     virtual tools::Ink* getStateInk() const { return nullptr; }
 
     // Called when a tag is deleted.
-    virtual void onRemoveFrameTag(Editor* editor, doc::FrameTag* tag) { }
+    virtual void onRemoveTag(Editor* editor, doc::Tag* tag) { }
 
   private:
     DISABLE_COPYING(EditorState);
   };
 
-  typedef base::SharedPtr<EditorState> EditorStatePtr;
+  typedef std::shared_ptr<EditorState> EditorStatePtr;
 
 } // namespace app
 

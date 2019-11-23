@@ -13,6 +13,8 @@
 #include "fmt/format.h"
 #include "gfx/size.h"
 
+#include <cmath>
+
 namespace app {
 namespace script {
 
@@ -25,13 +27,24 @@ gfx::Size Size_new(lua_State* L, int index)
   if (auto sz2 = may_get_obj<gfx::Size>(L, index)) {
     sz = *sz2;
   }
-  // Convert { width, height } into a Size
+  // Convert {x=int,y=int} or {int,int} into a Size
   else if (lua_istable(L, index)) {
-    lua_getfield(L, index, "width");
-    lua_getfield(L, index, "height");
-    sz.w = lua_tointeger(L, -2);
-    sz.h = lua_tointeger(L, -1);
-    lua_pop(L, 2);
+    const int type = lua_getfield(L, index, "width");
+    if (type != LUA_TNONE &&
+        type != LUA_TNIL) {
+      lua_getfield(L, index, "height");
+      sz.w = lua_tointeger(L, -2);
+      sz.h = lua_tointeger(L, -1);
+      lua_pop(L, 2);
+    }
+    else {
+      lua_pop(L, 1);
+      lua_geti(L, index, 1);
+      lua_geti(L, index, 2);
+      sz.w = lua_tointeger(L, -2);
+      sz.h = lua_tointeger(L, -1);
+      lua_pop(L, 2);
+    }
   }
   else {
     sz.w = lua_tointeger(L, index);
@@ -65,6 +78,80 @@ int Size_tostring(lua_State* L)
   const auto sz = get_obj<gfx::Size>(L, 1);
   lua_pushstring(L, fmt::format("Size{{ width={}, height={} }}",
                                 sz->w, sz->h).c_str());
+  return 1;
+}
+
+int Size_unm(lua_State* L)
+{
+  const auto sz = get_obj<gfx::Size>(L, 1);
+  push_obj(L, -(*sz));
+  return 1;
+}
+
+int Size_add(lua_State* L)
+{
+  gfx::Size result(0, 0);
+  if (lua_isuserdata(L, 1))
+    result += *get_obj<gfx::Size>(L, 1);
+  else
+    result += lua_tointeger(L, 1);
+  if (lua_isuserdata(L, 2))
+    result += *get_obj<gfx::Size>(L, 2);
+  else
+    result += lua_tointeger(L, 2);
+  push_obj(L, result);
+  return 1;
+}
+
+int Size_sub(lua_State* L)
+{
+  gfx::Size result = *get_obj<gfx::Size>(L, 1);
+  if (lua_isuserdata(L, 2))
+    result -= *get_obj<gfx::Size>(L, 2);
+  else
+    result -= lua_tointeger(L, 2);
+  push_obj(L, result);
+  return 1;
+}
+
+int Size_mul(lua_State* L)
+{
+  gfx::Size result = *get_obj<gfx::Size>(L, 1);
+  result *= lua_tointeger(L, 2);
+  push_obj(L, result);
+  return 1;
+}
+
+int Size_div(lua_State* L)
+{
+  gfx::Size result = *get_obj<gfx::Size>(L, 1);
+  const int value = lua_tointeger(L, 2);
+  if (value == 0)
+    return luaL_error(L, "attempt to divide by zero");
+  result /= value;
+  push_obj(L, result);
+  return 1;
+}
+
+int Size_mod(lua_State* L)
+{
+  gfx::Size result = *get_obj<gfx::Size>(L, 1);
+  const int value = lua_tointeger(L, 2);
+  if (value == 0)
+    return luaL_error(L, "attempt to divide by zero");
+  result.w %= value;
+  result.h %= value;
+  push_obj(L, result);
+  return 1;
+}
+
+int Size_pow(lua_State* L)
+{
+  gfx::Size result = *get_obj<gfx::Size>(L, 1);
+  const int value = lua_tointeger(L, 2);
+  result.w = std::pow(result.w, value);
+  result.h = std::pow(result.h, value);
+  push_obj(L, result);
   return 1;
 }
 
@@ -104,6 +191,14 @@ const luaL_Reg Size_methods[] = {
   { "__gc", Size_gc },
   { "__eq", Size_eq },
   { "__tostring", Size_tostring },
+  { "__unm", Size_unm },
+  { "__add", Size_add },
+  { "__sub", Size_sub },
+  { "__mul", Size_mul },
+  { "__div", Size_div },
+  { "__mod", Size_mod },
+  { "__pow", Size_pow },
+  { "__idiv", Size_div },
   { nullptr, nullptr }
 };
 

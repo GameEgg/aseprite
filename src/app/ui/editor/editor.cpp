@@ -1,5 +1,5 @@
 // Aseprite
-// Copyright (c) 2018-2019  Igara Studio S.A.
+// Copyright (C) 2018-2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -48,6 +48,7 @@
 #include "app/ui/main_window.h"
 #include "app/ui/skin/skin_theme.h"
 #include "app/ui/status_bar.h"
+#include "app/ui/timeline/timeline.h"
 #include "app/ui/toolbar.h"
 #include "app/ui_context.h"
 #include "base/bind.h"
@@ -133,7 +134,7 @@ private:
 EditorRender* Editor::m_renderEngine = nullptr;
 
 Editor::Editor(Doc* document, EditorFlags flags)
-  : Widget(editor_type())
+  : Widget(Editor::Type())
   , m_state(new StandbyState())
   , m_decorator(NULL)
   , m_document(document)
@@ -236,7 +237,8 @@ bool Editor::isActive() const
   return (current_editor == this);
 }
 
-WidgetType editor_type()
+// static
+WidgetType Editor::Type()
 {
   static WidgetType type = kGenericWidget;
   if (type == kGenericWidget)
@@ -383,6 +385,13 @@ void Editor::getSite(Site* site) const
   if (!m_selectedSlices.empty() &&
       getCurrentEditorInk()->isSlice()) {
     site->selectedSlices(m_selectedSlices);
+  }
+
+  // TODO we should not access timeline directly here
+  Timeline* timeline = App::instance()->timeline();
+  if (timeline &&
+      timeline->range().enabled()) {
+    site->range(timeline->range());
   }
 }
 
@@ -622,9 +631,9 @@ void Editor::drawOneSpriteUnclippedRect(ui::Graphics* g, const gfx::Rect& sprite
         opts.opacityStep(m_docPref.onionskin.opacityStep());
         opts.layer(m_docPref.onionskin.currentLayer() ? m_layer: nullptr);
 
-        FrameTag* tag = nullptr;
+        Tag* tag = nullptr;
         if (m_docPref.onionskin.loopTag())
-          tag = m_sprite->frameTags().innerTag(m_frame);
+          tag = m_sprite->tags().innerTag(m_frame);
         opts.loopTag(tag);
 
         m_renderEngine->setOnionskin(opts);
@@ -719,7 +728,7 @@ void Editor::drawOneSpriteUnclippedRect(ui::Graphics* g, const gfx::Rect& sprite
 
       // Draw the grid
       if (m_docPref.show.grid()) {
-        gfx::Rect gridrc = m_docPref.grid.bounds();
+        gfx::Rect gridrc = m_sprite->gridBounds();
         if (m_proj.applyX(gridrc.w) > 2 &&
             m_proj.applyY(gridrc.h) > 2) {
           int alpha = m_docPref.grid.opacity();
@@ -731,9 +740,10 @@ void Editor::drawOneSpriteUnclippedRect(ui::Graphics* g, const gfx::Rect& sprite
             alpha = MID(0, alpha, 255);
           }
 
-          if (alpha > 8)
-            drawGrid(g, enclosingRect, m_docPref.grid.bounds(),
+          if (alpha > 8) {
+            drawGrid(g, enclosingRect, gridrc,
                      m_docPref.grid.color(), alpha);
+          }
         }
       }
     }
@@ -1431,7 +1441,7 @@ Rect Editor::getViewportBounds()
 Rect Editor::getVisibleSpriteBounds()
 {
   if (m_sprite)
-    return getViewportBounds().createIntersection(m_sprite->bounds());
+    return getViewportBounds().createIntersection(gfx::Rect(canvasSize()));
 
   // This cannot happen, the sprite must be != nullptr. In old
   // Aseprite versions we were using one Editor to show multiple
@@ -1719,6 +1729,13 @@ bool Editor::onProcessMessage(Message* msg)
       }
       break;
 
+    case kFocusEnterMessage: {
+      ASSERT(m_state);
+      if (m_state)
+        m_state->onEditorGotFocus(this);
+      break;
+    }
+
     case kMouseEnterMessage:
       m_brushPreview.hide();
       updateToolLoopModifiersIndicators();
@@ -1974,9 +1991,10 @@ void Editor::onPaint(ui::PaintEvent& ev)
   // Editor with sprite
   else {
     try {
-      // Lock the sprite to read/render it. We wait 1/4 secs in case
-      // the background thread is making a backup.
-      DocReader documentReader(m_document, 250);
+      // Lock the sprite to read/render it. Here we don't wait if the
+      // document is locked (e.g. a filter is being applied to the
+      // sprite) to avoid locking the UI.
+      DocReader documentReader(m_document, 0);
 
       // Draw the sprite in the editor
       renderChrono.reset();
@@ -2014,8 +2032,9 @@ void Editor::onPaint(ui::PaintEvent& ev)
       }
     }
     catch (const LockedDocException&) {
-      // The sprite is locked to be read, so we can draw an opaque
-      // background only.
+      // The sprite is locked, so we cannot render it, we can draw an
+      // opaque background now, and defer the rendering of the sprite
+      // for later.
       g->fillRect(theme->colors.editorFace(), rc);
       defer_invalid_rect(g->getClipBounds().offset(bounds().origin()));
     }
@@ -2109,16 +2128,16 @@ void Editor::onRemoveCel(DocEvent& ev)
   m_showGuidesThisCel = nullptr;
 }
 
-void Editor::onAddFrameTag(DocEvent& ev)
+void Editor::onAddTag(DocEvent& ev)
 {
   m_tagFocusBand = -1;
 }
 
-void Editor::onRemoveFrameTag(DocEvent& ev)
+void Editor::onRemoveTag(DocEvent& ev)
 {
   m_tagFocusBand = -1;
   if (m_state)
-    m_state->onRemoveFrameTag(this, ev.frameTag());
+    m_state->onRemoveTag(this, ev.tag());
 }
 
 void Editor::onRemoveSlice(DocEvent& ev)
@@ -2180,6 +2199,15 @@ bool Editor::canStartMovingSelectionPixels()
      // We can move the selection when the Copy selection key (Ctrl) is pressed.
      (m_customizationDelegate &&
       int(m_customizationDelegate->getPressedKeyAction(KeyContext::TranslatingSelection) & KeyAction::CopySelection)));
+}
+
+bool Editor::keepTimelineRange()
+{
+  if (auto movingPixels = dynamic_cast<MovingPixelsState*>(m_state.get())) {
+    if (movingPixels->canHandleFrameChange())
+      return true;
+  }
+  return false;
 }
 
 EditorHit Editor::calcHit(const gfx::Point& mouseScreenPos)
@@ -2279,8 +2307,11 @@ void Editor::setZoomAndCenterInMouse(const Zoom& zoom,
       break;
   }
 
-  // Limit zooming screen position to the visible sprite bounds
-  gfx::Rect visibleBounds = editorToScreen(getVisibleSpriteBounds());
+  // Limit zooming screen position to the visible sprite bounds (we
+  // use canvasSize() because if the tiled mode is enabled, we need
+  // extra space for the zoom)
+  gfx::Rect visibleBounds = editorToScreen(
+    getViewportBounds().createIntersection(gfx::Rect(gfx::Point(0, 0), canvasSize())));
   screenPos.x = base::clamp(screenPos.x, visibleBounds.x, visibleBounds.x2()-1);
   screenPos.y = base::clamp(screenPos.y, visibleBounds.y, visibleBounds.y2()-1);
 
@@ -2408,7 +2439,7 @@ void Editor::pasteImage(const Image* image, const Mask* mask)
 
 void Editor::startSelectionTransformation(const gfx::Point& move, double angle)
 {
-  if (MovingPixelsState* movingPixels = dynamic_cast<MovingPixelsState*>(m_state.get())) {
+  if (auto movingPixels = dynamic_cast<MovingPixelsState*>(m_state.get())) {
     movingPixels->translate(move);
     if (std::fabs(angle) > 1e-5)
       movingPixels->rotate(angle);
@@ -2420,9 +2451,9 @@ void Editor::startSelectionTransformation(const gfx::Point& move, double angle)
 
 void Editor::startFlipTransformation(doc::algorithm::FlipType flipType)
 {
-  if (MovingPixelsState* movingPixels = dynamic_cast<MovingPixelsState*>(m_state.get()))
+  if (auto movingPixels = dynamic_cast<MovingPixelsState*>(m_state.get()))
     movingPixels->flip(flipType);
-  else if (StandbyState* standby = dynamic_cast<StandbyState*>(m_state.get()))
+  else if (auto standby = dynamic_cast<StandbyState*>(m_state.get()))
     standby->startFlipTransformation(this, flipType);
 }
 
@@ -2670,6 +2701,26 @@ void Editor::expandRegionByTiledMode(gfx::Region& rgn,
     tile.offset(-w, h); rgn |= tile;
     tile.offset(w, 0); rgn |= tile;
   }
+}
+
+void Editor::collapseRegionByTiledMode(gfx::Region& rgn) const
+{
+  auto canvasSize = this->canvasSize();
+  rgn &= gfx::Region(gfx::Rect(canvasSize));
+
+  const int sprW = m_sprite->width();
+  const int sprH = m_sprite->height();
+
+  gfx::Region newRgn;
+  for (int v=0; v<canvasSize.h; v+=sprH) {
+    for (int u=0; u<canvasSize.w; u+=sprW) {
+      gfx::Region tmp(gfx::Rect(u, v, sprW, sprH));
+      tmp &= rgn;
+      tmp.offset(-u, -v);
+      newRgn |= tmp;
+    }
+  }
+  rgn = newRgn;
 }
 
 bool Editor::isMovingPixels() const

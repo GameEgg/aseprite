@@ -1,6 +1,6 @@
 // Aseprite Document Library
-// Copyright (c) 2018 Igara Studio S.A.
-// Copyright (c) 2001-2018 David Capello
+// Copyright (C) 2018-2019  Igara Studio S.A.
+// Copyright (C) 2001-2018  David Capello
 //
 // This file is released under the terms of the MIT license.
 // Read LICENSE.txt for more information.
@@ -16,13 +16,13 @@
 #include "base/remove_from_container.h"
 #include "doc/cel.h"
 #include "doc/cels_range.h"
-#include "doc/frame_tag.h"
 #include "doc/image_impl.h"
 #include "doc/layer.h"
 #include "doc/palette.h"
 #include "doc/primitives.h"
 #include "doc/remap.h"
 #include "doc/rgbmap.h"
+#include "doc/tag.h"
 
 #include <algorithm>
 #include <cstring>
@@ -34,6 +34,9 @@ namespace doc {
 //////////////////////////////////////////////////////////////////////
 // Constructors/Destructor
 
+// static
+gfx::Rect Sprite::DefaultGridBounds() { return gfx::Rect(0, 0, 16, 16); }
+
 Sprite::Sprite(const ImageSpec& spec,
                int ncolors)
   : Object(ObjectType::Sprite)
@@ -43,8 +46,9 @@ Sprite::Sprite(const ImageSpec& spec,
   , m_frames(1)
   , m_frlens(1, 100)            // First frame with 100 msecs of duration
   , m_root(new LayerGroup(this))
+  , m_gridBounds(Sprite::DefaultGridBounds())
   , m_rgbMap(nullptr)           // Initial RGB map
-  , m_frameTags(this)
+  , m_tags(this)
   , m_slices(this)
   , m_pivot(0.5, 0.5)
 {
@@ -90,15 +94,16 @@ Sprite::~Sprite()
 }
 
 // static
-Sprite* Sprite::createBasicSprite(const ImageSpec& spec,
-                                  const int ncolors)
+Sprite* Sprite::MakeStdSprite(const ImageSpec& spec,
+                              const int ncolors,
+                              const ImageBufferPtr& imageBuf)
 {
   // Create the sprite.
   std::unique_ptr<Sprite> sprite(new Sprite(spec, ncolors));
   sprite->setTotalFrames(frame_t(1));
 
   // Create the main image.
-  ImageRef image(Image::create(spec));
+  ImageRef image(Image::create(spec, imageBuf));
   clear_image(image.get(), 0);
 
   // Create the first transparent layer.

@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -49,8 +50,8 @@ using namespace std;
 using namespace ui;
 
 FilterManagerImpl::FilterManagerImpl(Context* context, Filter* filter)
-  : m_context(context)
-  , m_site(context->activeSite())
+  : m_reader(context)
+  , m_site(*const_cast<Site*>(m_reader.site()))
   , m_filter(filter)
   , m_cel(nullptr)
   , m_src(nullptr)
@@ -122,6 +123,8 @@ void FilterManagerImpl::begin()
   updateBounds(m_mask);
 }
 
+#ifdef ENABLE_UI
+
 void FilterManagerImpl::beginForPreview()
 {
   Doc* document = m_site.document();
@@ -160,6 +163,8 @@ void FilterManagerImpl::beginForPreview()
   }
 }
 
+#endif // ENABLE_UI
+
 void FilterManagerImpl::end()
 {
   m_maskBits.unlock();
@@ -182,6 +187,10 @@ bool FilterManagerImpl::applyStep()
         gfx::Rect(x, y, m_bounds.w - x, m_bounds.h - y));
 
     m_maskIterator = m_maskBits.begin();
+  }
+
+  if (m_row == 0) {
+    applyToPaletteIfNeeded();
   }
 
   switch (m_site.sprite()->pixelFormat()) {
@@ -214,7 +223,7 @@ void FilterManagerImpl::apply()
     if (algorithm::shrink_bounds2(m_src.get(), m_dst.get(),
                                   m_bounds, output)) {
       if (m_cel->layer()->isBackground()) {
-        m_transaction->execute(
+        (*m_tx)(
           new cmd::CopyRegion(
             m_cel->image(),
             m_dst.get(),
@@ -223,7 +232,7 @@ void FilterManagerImpl::apply()
       }
       else {
         // Patch "m_cel"
-        m_transaction->execute(
+        (*m_tx)(
           new cmd::PatchCel(
             m_cel, m_dst.get(),
             gfx::Region(output),
@@ -235,6 +244,8 @@ void FilterManagerImpl::apply()
 
 void FilterManagerImpl::applyToTarget()
 {
+  applyToPaletteIfNeeded();
+
   const bool paletteChange = paletteHasChanged();
   bool cancelled = false;
 
@@ -243,7 +254,7 @@ void FilterManagerImpl::applyToTarget()
   switch (m_celsTarget) {
 
     case CelsTarget::Selected: {
-      auto range = App::instance()->timeline()->range();
+      auto range = m_site.range();
       if (range.enabled()) {
         for (Cel* cel : get_unlocked_unique_cels(m_site.sprite(), range)) {
           if (!cel->layer()->isReference())
@@ -275,11 +286,6 @@ void FilterManagerImpl::applyToTarget()
     return;
   }
 
-  // Initialize writting operation
-  ContextReader reader(m_context);
-  ContextWriter writer(reader);
-  m_transaction.reset(new Transaction(writer.context(), m_filter->getName(), ModifyDocument));
-
   m_progressBase = 0.0f;
   m_progressWidth = (cels.size() > 0 ? 1.0f / cels.size(): 1.0f);
 
@@ -289,7 +295,7 @@ void FilterManagerImpl::applyToTarget()
   if (paletteChange) {
     Palette newPalette = *getNewPalette();
     restoreSpritePalette();
-    m_transaction->execute(
+    (*m_tx)(
       new cmd::SetPalette(m_site.sprite(),
                           m_site.frame(), &newPalette));
   }
@@ -318,18 +324,30 @@ void FilterManagerImpl::applyToTarget()
   m_oldPalette.reset(nullptr);
 }
 
+void FilterManagerImpl::initTransaction()
+{
+  ASSERT(!m_tx);
+  m_writer.reset(new ContextWriter(m_reader));
+  m_tx.reset(new Tx(m_writer->context(),
+                    m_filter->getName(),
+                    ModifyDocument));
+}
+
 bool FilterManagerImpl::isTransaction() const
 {
-  return m_transaction != nullptr;
+  return (m_tx != nullptr);
 }
 
 // This must be executed in the main UI thread.
 // Check Transaction::commit() comments.
 void FilterManagerImpl::commitTransaction()
 {
-  ASSERT(m_transaction);
-  m_transaction->commit();
+  ASSERT(m_tx);
+  m_tx->commit();
+  m_writer.reset();
 }
+
+#ifdef ENABLE_UI
 
 void FilterManagerImpl::flush()
 {
@@ -381,6 +399,8 @@ void FilterManagerImpl::disablePreview()
   }
 }
 
+#endif  // ENABLE_UI
+
 const void* FilterManagerImpl::getSourceAddress()
 {
   return m_src->getPixelAddress(m_bounds.x, m_bounds.y+m_row);
@@ -427,11 +447,7 @@ Palette* FilterManagerImpl::getNewPalette()
 
 doc::PalettePicks FilterManagerImpl::getPalettePicks()
 {
-  doc::PalettePicks picks;
-  ColorBar::instance()
-    ->getPaletteView()
-    ->getSelectedEntries(picks);
-  return picks;
+  return m_site.selectedColors();
 }
 
 void FilterManagerImpl::init(Cel* cel)
@@ -494,11 +510,20 @@ void FilterManagerImpl::restoreSpritePalette()
     m_site.sprite()->setPalette(m_oldPalette.get(), false);
 }
 
+void FilterManagerImpl::applyToPaletteIfNeeded()
+{
+  m_filter->applyToPalette(this);
+}
+
+#ifdef ENABLE_UI
+
 void FilterManagerImpl::redrawColorPalette()
 {
   set_current_palette(getNewPalette(), false);
   ColorBar::instance()->invalidate();
 }
+
+#endif // ENABLE_UI
 
 bool FilterManagerImpl::isMaskActive() const
 {

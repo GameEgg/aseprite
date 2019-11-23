@@ -13,7 +13,6 @@
 
 #include "app/cli/app_options.h"
 #include "app/cli/cli_delegate.h"
-#include "app/commands/cmd_sprite_size.h"
 #include "app/commands/commands.h"
 #include "app/commands/params.h"
 #include "app/console.h"
@@ -27,13 +26,16 @@
 #include "base/convert_to.h"
 #include "base/fs.h"
 #include "base/split_string.h"
-#include "doc/frame_tag.h"
-#include "doc/frame_tags.h"
 #include "doc/layer.h"
 #include "doc/selected_frames.h"
 #include "doc/selected_layers.h"
 #include "doc/slice.h"
+#include "doc/tag.h"
+#include "doc/tags.h"
 #include "render/dithering_algorithm.h"
+
+#include <queue>
+#include <vector>
 
 namespace app {
 
@@ -66,6 +68,8 @@ bool match_path(const std::string& filter,
       return false;
   }
 
+  const bool wildcard = (!a.empty() && a[a.size()-1] == "*");
+
   // Exclude group itself when all children are excluded. This special
   // case is only for exclusion because if we leave the group
   // selected, the propagation of the selection will include all
@@ -73,45 +77,96 @@ bool match_path(const std::string& filter,
   if (exclude &&
       a.size() > 1 &&
       a.size() == b.size()+1 &&
-      a[a.size()-1] == "*")
+      wildcard) {
     return true;
+  }
 
-  return (a.size() <= b.size());
+  if (exclude || wildcard)
+    return (a.size() <= b.size());
+  else {
+    // Include filters need exact match when there is no wildcard
+    return (a.size() == b.size());
+  }
 }
 
-bool filter_layer(const Layer* layer,
-                  const std::string& layer_path,
+bool filter_layer(const std::string& layer_path,
                   const std::vector<std::string>& filters,
                   const bool result)
 {
   for (const auto& filter : filters) {
-    if (layer->name() == filter ||
-        match_path(filter, layer_path, !result))
+    if (match_path(filter, layer_path, !result))
       return result;
   }
   return !result;
 }
 
-void filter_layers(const LayerList& layers,
-                   const CliOpenFile& cof,
-                   SelectedLayers& filteredLayers)
+// If there is one layer with the given name "filter", we can convert
+// the filter to a full path to the layer (e.g. to match child layers
+// of a group).
+std::string convert_filter_to_layer_path_if_possible(
+  const Sprite* sprite,
+  const std::string& filter)
 {
-  for (Layer* layer : layers) {
+  std::string fullName;
+  std::queue<Layer*> layers;
+  layers.push(sprite->root());
+
+  while (!layers.empty()) {
+    const Layer* layer = layers.front();
+    layers.pop();
+
+    if (layer != sprite->root() &&
+        layer->name() == filter) {
+      if (fullName.empty()) {
+        fullName = get_layer_path(layer);
+      }
+      else {
+        // Two or more layers with the same name (use "filter" as a
+        // general filter, not a specific layer name)
+        return filter;
+      }
+    }
+    if (layer->isGroup()) {
+      for (auto child : static_cast<const LayerGroup*>(layer)->layers())
+        layers.push(child);
+    }
+  }
+
+  if (!fullName.empty())
+    return fullName;
+  else
+    return filter;
+}
+
+} // anonymous namespace
+
+// static
+void CliProcessor::FilterLayers(const Sprite* sprite,
+                                std::vector<std::string> includes,
+                                std::vector<std::string> excludes,
+                                SelectedLayers& filteredLayers)
+{
+  // Convert filters to full paths for the sprite layers if there are
+  // just one layer with the given name.
+  for (auto& include : includes)
+    include = convert_filter_to_layer_path_if_possible(sprite, include);
+  for (auto& exclude : excludes)
+    exclude = convert_filter_to_layer_path_if_possible(sprite, exclude);
+
+  for (Layer* layer : sprite->allLayers()) {
     auto layer_path = get_layer_path(layer);
 
-    if ((cof.includeLayers.empty() && !layer->isVisibleHierarchy()) ||
-        (!cof.includeLayers.empty() && !filter_layer(layer, layer_path, cof.includeLayers, true)))
+    if ((includes.empty() && !layer->isVisibleHierarchy()) ||
+        (!includes.empty() && !filter_layer(layer_path, includes, true)))
       continue;
 
-    if (!cof.excludeLayers.empty() &&
-        !filter_layer(layer, layer_path, cof.excludeLayers, false))
+    if (!excludes.empty() &&
+        !filter_layer(layer_path, excludes, false))
       continue;
 
     filteredLayers.insert(layer);
   }
 }
-
-} // anonymous namespace
 
 CliProcessor::CliProcessor(CliDelegate* delegate,
                            const AppOptions& options)
@@ -123,7 +178,7 @@ CliProcessor::CliProcessor(CliDelegate* delegate,
     m_exporter.reset(new DocExporter);
 }
 
-void CliProcessor::process(Context* ctx)
+int CliProcessor::process(Context* ctx)
 {
   // --help
   if (m_options.showHelp()) {
@@ -158,12 +213,12 @@ void CliProcessor::process(Context* ctx)
         // --format <format>
         else if (opt == &m_options.format()) {
           if (m_exporter) {
-            DocExporter::DataFormat format = DocExporter::DefaultDataFormat;
+            SpriteSheetDataFormat format = SpriteSheetDataFormat::Default;
 
             if (value.value() == "json-hash")
-              format = DocExporter::JsonHashDataFormat;
+              format = SpriteSheetDataFormat::JsonHash;
             else if (value.value() == "json-array")
-              format = DocExporter::JsonArrayDataFormat;
+              format = SpriteSheetDataFormat::JsonArray;
 
             m_exporter->setDataFormat(format);
           }
@@ -176,18 +231,24 @@ void CliProcessor::process(Context* ctx)
         // --sheet-width <width>
         else if (opt == &m_options.sheetWidth()) {
           if (m_exporter)
-            m_exporter->setTextureWidth(strtol(value.value().c_str(), NULL, 0));
+            m_exporter->setTextureWidth(strtol(value.value().c_str(), nullptr, 0));
         }
         // --sheet-height <height>
         else if (opt == &m_options.sheetHeight()) {
           if (m_exporter)
-            m_exporter->setTextureHeight(strtol(value.value().c_str(), NULL, 0));
+            m_exporter->setTextureHeight(strtol(value.value().c_str(), nullptr, 0));
+        }
+        // --sheet-columns <columns>
+        else if (opt == &m_options.sheetColumns()) {
+          if (m_exporter)
+            m_exporter->setTextureColumns(strtol(value.value().c_str(), nullptr, 0));
+        }
+        // --sheet-rows <rows>
+        else if (opt == &m_options.sheetRows()) {
+          if (m_exporter)
+            m_exporter->setTextureRows(strtol(value.value().c_str(), nullptr, 0));
         }
         // --sheet-type <sheet-type>
-        // TODO Implement this parameter (never documented, but it's
-        //      shown in --help), anyway some work needed to move the
-        //      sprite sheet size calculation from ExportSpriteSheetCommand
-        //      to DocExporter
         else if (opt == &m_options.sheetType()) {
           if (value.value() == "horizontal")
             sheetType = SpriteSheetType::Horizontal;
@@ -207,10 +268,14 @@ void CliProcessor::process(Context* ctx)
         // --split-layers
         else if (opt == &m_options.splitLayers()) {
           cof.splitLayers = true;
+          if (m_exporter)
+            m_exporter->setSplitLayers(true);
         }
         // --split-tags
         else if (opt == &m_options.splitTags()) {
           cof.splitTags = true;
+          if (m_exporter)
+            m_exporter->setSplitTags(true);
         }
         // --split-slice
         else if (opt == &m_options.splitSlices()) {
@@ -228,9 +293,9 @@ void CliProcessor::process(Context* ctx)
         else if (opt == &m_options.allLayers()) {
           cof.allLayers = true;
         }
-        // --frame-tag <tag-name>
-        else if (opt == &m_options.frameTag()) {
-          cof.frameTag = value.value();
+        // --tag <tag-name>
+        else if (opt == &m_options.tag()) {
+          cof.tag = value.value();
         }
         // --frame-range from,to
         else if (opt == &m_options.frameRange()) {
@@ -249,6 +314,11 @@ void CliProcessor::process(Context* ctx)
           cof.ignoreEmpty = true;
           if (m_exporter)
             m_exporter->setIgnoreEmptyCels(true);
+        }
+        // --merge-duplicates
+        else if (opt == &m_options.mergeDuplicates()) {
+          if (m_exporter)
+            m_exporter->setMergeDuplicates(true);
         }
         // --border-padding
         else if (opt == &m_options.borderPadding()) {
@@ -270,6 +340,12 @@ void CliProcessor::process(Context* ctx)
           cof.trim = true;
           if (m_exporter)
             m_exporter->setTrimCels(true);
+        }
+        // --trim-sprite
+        else if (opt == &m_options.trimSprite()) {
+          cof.trim = true;
+          if (m_exporter)
+            m_exporter->setTrimSprite(true);
         }
         // --trim-by-grid
         else if (opt == &m_options.trimByGrid()) {
@@ -350,14 +426,14 @@ void CliProcessor::process(Context* ctx)
         }
         // --scale <factor>
         else if (opt == &m_options.scale()) {
-          Command* command = Commands::instance()->byId(CommandId::SpriteSize());
-          double scale = strtod(value.value().c_str(), NULL);
-          static_cast<SpriteSizeCommand*>(command)->setScale(scale, scale);
+          Params params;
+          params.set("scale", value.value().c_str());
 
           // Scale all sprites
           for (auto doc : ctx->documents()) {
             ctx->setActiveDocument(doc);
-            ctx->executeCommand(command);
+            ctx->executeCommand(Commands::instance()->byId(CommandId::SpriteSize()),
+                                params);
           }
         }
         // --dithering-algorithm <algorithm>
@@ -442,9 +518,10 @@ void CliProcessor::process(Context* ctx)
             scaleHeight = (doc->height() > maxHeight ? maxHeight / doc->height() : 1.0);
             if (scaleWidth < 1.0 || scaleHeight < 1.0) {
               scale = MIN(scaleWidth, scaleHeight);
-              Command* command = Commands::instance()->byId(CommandId::SpriteSize());
-              static_cast<SpriteSizeCommand*>(command)->setScale(scale, scale);
-              ctx->executeCommand(command);
+              Params params;
+              params.set("scale", base::convert_to<std::string>(scale).c_str());
+              ctx->executeCommand(Commands::instance()->byId(CommandId::SpriteSize()),
+                                  params);
             }
           }
         }
@@ -452,7 +529,9 @@ void CliProcessor::process(Context* ctx)
         // --script <filename>
         else if (opt == &m_options.script()) {
           std::string filename = value.value();
-          m_delegate->execScript(filename, scriptParams);
+          int code = m_delegate->execScript(filename, scriptParams);
+          if (code != 0)
+            return code;
         }
         // --script-param <name=value>
         else if (opt == &m_options.scriptParam()) {
@@ -467,21 +546,24 @@ void CliProcessor::process(Context* ctx)
 #endif
         // --list-layers
         else if (opt == &m_options.listLayers()) {
-          cof.listLayers = true;
           if (m_exporter)
             m_exporter->setListLayers(true);
+          else
+            cof.listLayers = true;
         }
         // --list-tags
         else if (opt == &m_options.listTags()) {
-          cof.listTags = true;
           if (m_exporter)
-            m_exporter->setListFrameTags(true);
+            m_exporter->setListTags(true);
+          else
+            cof.listTags = true;
         }
         // --list-slices
         else if (opt == &m_options.listSlices()) {
-          cof.listSlices = true;
           if (m_exporter)
             m_exporter->setListSlices(true);
+          else
+            cof.listSlices = true;
         }
         // --oneframe
         else if (opt == &m_options.oneFrame()) {
@@ -498,8 +580,10 @@ void CliProcessor::process(Context* ctx)
     }
 
     if (m_exporter) {
-      if (sheetType != SpriteSheetType::None)
-        m_exporter->setSpriteSheetType(sheetType);
+      // Rows sprite sheet as the default type
+      if (sheetType == SpriteSheetType::None)
+        sheetType = SpriteSheetType::Rows;
+      m_exporter->setSpriteSheetType(sheetType);
 
       m_delegate->exportFiles(ctx, *m_exporter.get());
       m_exporter.reset(nullptr);
@@ -516,6 +600,7 @@ void CliProcessor::process(Context* ctx)
   else {
     m_delegate->batchMode();
   }
+  return 0;
 }
 
 bool CliProcessor::openFile(Context* ctx, CliOpenFile& cof)
@@ -547,18 +632,18 @@ bool CliProcessor::openFile(Context* ctx, CliOpenFile& cof)
 
     // Add document to exporter
     if (m_exporter) {
-      FrameTag* frameTag = nullptr;
+      Tag* tag = nullptr;
       SelectedFrames selFrames;
 
-      if (cof.hasFrameTag()) {
-        frameTag = doc->sprite()->frameTags().getByName(cof.frameTag);
+      if (cof.hasTag()) {
+        tag = doc->sprite()->tags().getByName(cof.tag);
       }
       if (cof.hasFrameRange()) {
         // --frame-range with --frame-tag
-        if (frameTag) {
+        if (tag) {
           selFrames.insert(
-            frameTag->fromFrame()+MID(0, cof.fromFrame, frameTag->frames()-1),
-            frameTag->fromFrame()+MID(0, cof.toFrame, frameTag->frames()-1));
+            tag->fromFrame()+MID(0, cof.fromFrame, tag->frames()-1),
+            tag->fromFrame()+MID(0, cof.toFrame, tag->frames()-1));
         }
         // --frame-range without --frame-tag
         else {
@@ -566,37 +651,16 @@ bool CliProcessor::openFile(Context* ctx, CliOpenFile& cof)
         }
       }
 
-      if (cof.hasLayersFilter()) {
-        SelectedLayers filteredLayers;
-        filter_layers(doc->sprite()->allLayers(), cof, filteredLayers);
+      SelectedLayers filteredLayers;
+      if (cof.hasLayersFilter())
+        filterLayers(doc->sprite(), cof, filteredLayers);
 
-        if (cof.splitLayers) {
-          for (Layer* layer : filteredLayers.toAllLayersList()) {
-            SelectedLayers oneLayer;
-            oneLayer.insert(layer);
-
-            m_exporter->addDocument(doc, frameTag, &oneLayer,
-                                    (!selFrames.empty() ? &selFrames: nullptr));
-          }
-        }
-        else {
-          m_exporter->addDocument(doc, frameTag, &filteredLayers,
-                                  (!selFrames.empty() ? &selFrames: nullptr));
-        }
-      }
-      else if (cof.splitLayers) {
-        for (auto layer : doc->sprite()->allVisibleLayers()) {
-          SelectedLayers oneLayer;
-          oneLayer.insert(layer);
-
-          m_exporter->addDocument(doc, frameTag, &oneLayer,
-                                  (!selFrames.empty() ? &selFrames: nullptr));
-        }
-      }
-      else {
-        m_exporter->addDocument(doc, frameTag, nullptr,
-                                (!selFrames.empty() ? &selFrames: nullptr));
-      }
+      m_exporter->addDocumentSamples(
+        doc, tag,
+        cof.splitLayers,
+        cof.splitTags,
+        (cof.hasLayersFilter() ? &filteredLayers: nullptr),
+        (!selFrames.empty() ? &selFrames: nullptr));
     }
   }
 
@@ -638,7 +702,6 @@ void CliProcessor::saveFile(Context* ctx, const CliOpenFile& cof)
   }
 
   SelectedLayers filteredLayers;
-  LayerList allLayers = doc->sprite()->allLayers();
   LayerList layers;
   // --save-as with --split-layers or --split-tags
   if (cof.splitLayers) {
@@ -648,32 +711,32 @@ void CliProcessor::saveFile(Context* ctx, const CliOpenFile& cof)
   else {
     // Filter layers
     if (cof.hasLayersFilter())
-      filter_layers(allLayers, cof, filteredLayers);
+      filterLayers(doc->sprite(), cof, filteredLayers);
 
     // All visible layers
     layers.push_back(nullptr);
   }
 
-  std::vector<doc::FrameTag*> frameTags;
-  if (cof.hasFrameTag()) {
-    frameTags.push_back(
-      doc->sprite()->frameTags().getByName(cof.frameTag));
+  std::vector<doc::Tag*> tags;
+  if (cof.hasTag()) {
+    tags.push_back(
+      doc->sprite()->tags().getByName(cof.tag));
   }
   else {
-    doc::FrameTags& origFrameTags = cof.document->sprite()->frameTags();
-    if (cof.splitTags && !origFrameTags.empty()) {
-      for (doc::FrameTag* frameTag : origFrameTags) {
+    doc::Tags& origTags = cof.document->sprite()->tags();
+    if (cof.splitTags && !origTags.empty()) {
+      for (doc::Tag* tag : origTags) {
         // In case the tag is outside the given --frame-range
         if (cof.hasFrameRange()) {
-          if (frameTag->toFrame() < cof.fromFrame ||
-              frameTag->fromFrame() > cof.toFrame)
+          if (tag->toFrame() < cof.fromFrame ||
+              tag->fromFrame() > cof.toFrame)
             continue;
         }
-        frameTags.push_back(frameTag);
+        tags.push_back(tag);
       }
     }
     else
-      frameTags.push_back(nullptr);
+      tags.push_back(nullptr);
   }
 
   std::vector<doc::Slice*> slices;
@@ -695,7 +758,7 @@ void CliProcessor::saveFile(Context* ctx, const CliOpenFile& cof)
   bool groupInFormat = is_group_in_filename_format(fn);
 
   for (doc::Slice* slice : slices) {
-    for (doc::FrameTag* frameTag : frameTags) {
+    for (doc::Tag* tag : tags) {
       // For each layer, hide other ones and save the sprite.
       for (doc::Layer* layer : layers) {
         RestoreVisibleLayers layersVisibility;
@@ -746,11 +809,11 @@ void CliProcessor::saveFile(Context* ctx, const CliOpenFile& cof)
 
           itemCof.includeLayers.push_back(layer->name());
         }
-        if (frameTag) {
+        if (tag) {
           fnInfo
-            .innerTagName(frameTag->name())
-            .outerTagName(frameTag->name());
-          itemCof.frameTag = frameTag->name();
+            .innerTagName(tag->name())
+            .outerTagName(tag->name());
+          itemCof.tag = tag->name();
         }
         if (slice) {
           fnInfo.sliceName(slice->name());

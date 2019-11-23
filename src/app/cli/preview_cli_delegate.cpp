@@ -17,6 +17,7 @@
 #include "app/doc_exporter.h"
 #include "app/file/file.h"
 #include "base/fs.h"
+#include "doc/layer.h"
 #include "doc/sprite.h"
 
 #include <iostream>
@@ -111,9 +112,11 @@ void PreviewCliDelegate::saveFile(Context* ctx, const CliOpenFile& cof)
             << cof.document->sprite()->height() << "\n";
 
   showLayersFilter(cof);
+  std::cout << "  - Visible Layer:\n";
+  showLayerVisibility(cof.document->sprite()->root(), "    ");
 
-  if (cof.hasFrameTag()) {
-    std::cout << "  - Frame tag: '" << cof.frameTag << "'\n";
+  if (cof.hasTag()) {
+    std::cout << "  - Tag: '" << cof.tag << "'\n";
   }
 
   if (cof.hasSlice()) {
@@ -197,8 +200,8 @@ void PreviewCliDelegate::exportFiles(Context* ctx, DocExporter& exporter)
   if (!exporter.dataFilename().empty()) {
     std::string format = "Unknown";
     switch (exporter.dataFormat()) {
-      case DocExporter::JsonHashDataFormat: format = "JSON Hash"; break;
-      case DocExporter::JsonArrayDataFormat: format = "JSON Array"; break;
+      case SpriteSheetDataFormat::JsonHash: format = "JSON Hash"; break;
+      case SpriteSheetDataFormat::JsonArray: format = "JSON Array"; break;
     }
     std::cout << "  - Save data file: '" << exporter.dataFilename() << "'\n"
               << "  - Data format: " << format << "\n";
@@ -211,8 +214,8 @@ void PreviewCliDelegate::exportFiles(Context* ctx, DocExporter& exporter)
 }
 
 #ifdef ENABLE_SCRIPTING
-void PreviewCliDelegate::execScript(const std::string& filename,
-                                    const Params& params)
+int PreviewCliDelegate::execScript(const std::string& filename,
+                                   const Params& params)
 {
   std::cout << "- Run script: '" << filename << "'\n";
   if (!params.empty()) {
@@ -221,6 +224,7 @@ void PreviewCliDelegate::execScript(const std::string& filename,
       std::cout << "    " << kv.first << "=\"" << kv.second << "\",\n";
     std::cout << "  }\n";
   }
+  return 0;
 }
 #endif // ENABLE_SCRIPTING
 
@@ -238,6 +242,19 @@ void PreviewCliDelegate::showLayersFilter(const CliOpenFile& cof)
     for (const auto& filter : cof.excludeLayers)
       std::cout << ' ' << filter;
     std::cout << "\n";
+  }
+}
+
+void PreviewCliDelegate::showLayerVisibility(const doc::LayerGroup* group,
+                                             const std::string& indent)
+{
+  for (auto layer : group->layers()) {
+    if (!layer->isVisible())
+      continue;
+    std::cout << indent << "- " << layer->name() << "\n";
+    if (layer->isGroup())
+      showLayerVisibility(static_cast<const LayerGroup*>(layer),
+                          indent + "  ");
   }
 }
 

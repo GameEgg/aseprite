@@ -1,6 +1,6 @@
 // Aseprite Document Library
-// Copyright (c) 2018 Igara Studio S.A.
-// Copyright (c) 2001-2018 David Capello
+// Copyright (C) 2018-2019  Igara Studio S.A.
+// Copyright (C) 2001-2018  David Capello
 //
 // This file is released under the terms of the MIT license.
 // Read LICENSE.txt for more information.
@@ -14,7 +14,7 @@
 #include "doc/cel_list.h"
 #include "doc/color.h"
 #include "doc/frame.h"
-#include "doc/frame_tags.h"
+#include "doc/image_buffer.h"
 #include "doc/image_ref.h"
 #include "doc/image_spec.h"
 #include "doc/layer_list.h"
@@ -22,6 +22,7 @@
 #include "doc/pixel_format.h"
 #include "doc/pixel_ratio.h"
 #include "doc/slices.h"
+#include "doc/tags.h"
 #include "gfx/rect.h"
 
 #include <vector>
@@ -59,8 +60,11 @@ namespace doc {
     Sprite(const ImageSpec& spec, int ncolors = 256);
     virtual ~Sprite();
 
-    static Sprite* createBasicSprite(const ImageSpec& spec,
-                                     const int ncolors = 256);
+    // Creates a new sprite with one transparent layer and one cel
+    // with an image of the size of the sprite.
+    static Sprite* MakeStdSprite(const ImageSpec& spec,
+                                 const int ncolors = 256,
+                                 const ImageBufferPtr& imageBuf = ImageBufferPtr());
 
     ////////////////////////////////////////
     // Main properties
@@ -100,6 +104,10 @@ namespace doc {
 
     color_t transparentColor() const { return m_spec.maskColor(); }
     void setTransparentColor(color_t color);
+
+    static gfx::Rect DefaultGridBounds();
+    const gfx::Rect& gridBounds() const { return m_gridBounds; }
+    void setGridBounds(const gfx::Rect& rc) { m_gridBounds = rc; }
 
     virtual int getMemSize() const override;
 
@@ -145,8 +153,8 @@ namespace doc {
     void setFrameRangeDuration(frame_t from, frame_t to, int msecs);
     void setDurationForAllFrames(int msecs);
 
-    const FrameTags& frameTags() const { return m_frameTags; }
-    FrameTags& frameTags() { return m_frameTags; }
+    const Tags& tags() const { return m_tags; }
+    Tags& tags() { return m_tags; }
 
     const Slices& slices() const { return m_slices; }
     Slices& slices() { return m_slices; }
@@ -191,11 +199,12 @@ namespace doc {
     std::vector<int> m_frlens;             // duration per frame
     PalettesList m_palettes;               // list of palettes
     LayerGroup* m_root;                    // main group of layers
+    gfx::Rect m_gridBounds;                // grid settings
 
     // Current rgb map
     mutable RgbMap* m_rgbMap;
 
-    FrameTags m_frameTags;
+    Tags m_tags;
     Slices m_slices;
 
     gfx::PointF m_pivot;

@@ -1,5 +1,6 @@
 // Aseprite Document Library
-// Copyright (c) 2001-2015 David Capello
+// Copyright (C) 2019  Igara Studio S.A.
+// Copyright (C) 2001-2015  David Capello
 //
 // This file is released under the terms of the MIT license.
 // Read LICENSE.txt for more information.
@@ -12,14 +13,14 @@
 
 namespace doc {
 
-  class FrameTag;
   class Sprite;
+  class Tag;
 
   frame_t calculate_next_frame(
     const Sprite* sprite,
     frame_t frame,
     frame_t frameDelta,
-    const FrameTag* tag,
+    const Tag* tag,
     bool& pingPongForward);
 
 } // namespace doc

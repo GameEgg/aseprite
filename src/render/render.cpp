@@ -1,6 +1,6 @@
 // Aseprite Render Library
-// Copyright (c) 2019 Igara Studio S.A.
-// Copyright (c) 2001-2018 David Capello
+// Copyright (C) 2019  Igara Studio S.A.
+// Copyright (C) 2001-2018  David Capello
 //
 // This file is released under the terms of the MIT license.
 // Read LICENSE.txt for more information.
@@ -432,6 +432,8 @@ void composite_image_general(
     int(std::ceil(area.dstBounds().h)));
   gfx::RectF srcBounds = area.srcBounds();
 
+  dstBounds &= dst->bounds();
+
   int dstY = dstBounds.y;
   double srcXStart = srcBounds.x / sx;
   double srcXDelta = 1.0 / sx;
@@ -446,6 +448,7 @@ void composite_image_general(
       break;
 
     ASSERT(srcY >= 0 && srcY < src->height());
+    ASSERT(dstY >= 0 && dstY < dst->height());
 
     auto dstPtr = get_pixel_address_fast<DstTraits>(dst, dstBounds.x, dstY);
     auto srcPtr = get_pixel_address_fast<SrcTraits>(src, int(srcX), srcY);
@@ -846,7 +849,7 @@ void Render::renderOnionskin(
   // Onion-skin feature: Draw previous/next frames with different
   // opacity (<255)
   if (m_onionskin.type() != OnionskinType::NONE) {
-    FrameTag* loop = m_onionskin.loopTag();
+    Tag* loop = m_onionskin.loopTag();
     Layer* onionLayer = (m_onionskin.layer() ? m_onionskin.layer():
                                                m_sprite->root());
     frame_t frameIn;

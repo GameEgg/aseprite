@@ -32,7 +32,6 @@
 #include "base/fs.h"
 #include "base/mutex.h"
 #include "base/scoped_lock.h"
-#include "base/shared_ptr.h"
 #include "base/string.h"
 #include "dio/detect_format.h"
 #include "doc/doc.h"
@@ -139,18 +138,18 @@ bool is_static_image_format(const std::string& filename)
 FileOpROI::FileOpROI()
   : m_document(nullptr)
   , m_slice(nullptr)
-  , m_frameTag(nullptr)
+  , m_tag(nullptr)
 {
 }
 
 FileOpROI::FileOpROI(const Doc* doc,
                      const std::string& sliceName,
-                     const std::string& frameTagName,
+                     const std::string& tagName,
                      const doc::SelectedFrames& selFrames,
-                     const bool adjustByFrameTag)
+                     const bool adjustByTag)
   : m_document(doc)
   , m_slice(nullptr)
-  , m_frameTag(nullptr)
+  , m_tag(nullptr)
   , m_selFrames(selFrames)
 {
   if (doc) {
@@ -158,18 +157,18 @@ FileOpROI::FileOpROI(const Doc* doc,
       m_slice = doc->sprite()->slices().getByName(sliceName);
 
     // Don't allow exporting frame tags with empty names
-    if (!frameTagName.empty())
-      m_frameTag = doc->sprite()->frameTags().getByName(frameTagName);
+    if (!tagName.empty())
+      m_tag = doc->sprite()->tags().getByName(tagName);
 
-    if (m_frameTag) {
+    if (m_tag) {
       if (m_selFrames.empty())
-        m_selFrames.insert(m_frameTag->fromFrame(), m_frameTag->toFrame());
-      else if (adjustByFrameTag)
-        m_selFrames.displace(m_frameTag->fromFrame());
+        m_selFrames.insert(m_tag->fromFrame(), m_tag->toFrame());
+      else if (adjustByTag)
+        m_selFrames.displace(m_tag->fromFrame());
 
       m_selFrames =
-        m_selFrames.filter(MAX(0, m_frameTag->fromFrame()),
-                           MIN(m_frameTag->toFrame(), doc->sprite()->lastFrame()));
+        m_selFrames.filter(MAX(0, m_tag->fromFrame()),
+                           MIN(m_tag->toFrame(), doc->sprite()->lastFrame()));
     }
     // All frames if selected frames is empty
     else if (m_selFrames.empty())
@@ -425,9 +424,9 @@ FileOp* FileOp::createSaveDocumentOperation(const Context* context,
   }
 
   // Check frames support
-  if (!fop->m_document->sprite()->frameTags().empty()) {
-    if (!fop->m_format->support(FILE_SUPPORT_FRAME_TAGS)) {
-      warnings += "<<- " + Strings::alerts_file_format_frame_tags();
+  if (!fop->m_document->sprite()->tags().empty()) {
+    if (!fop->m_format->support(FILE_SUPPORT_TAGS)) {
+      warnings += "<<- " + Strings::alerts_file_format_tags();
     }
   }
 
@@ -508,8 +507,8 @@ FileOp* FileOp::createSaveDocumentOperation(const Context* context,
     frame_t outputFrame = 0;
 
     for (frame_t frame : fop->m_roi.selectedFrames()) {
-      FrameTag* innerTag = (fop->m_roi.frameTag() ? fop->m_roi.frameTag(): spr->frameTags().innerTag(frame));
-      FrameTag* outerTag = (fop->m_roi.frameTag() ? fop->m_roi.frameTag(): spr->frameTags().outerTag(frame));
+      Tag* innerTag = (fop->m_roi.tag() ? fop->m_roi.tag(): spr->tags().innerTag(frame));
+      Tag* outerTag = (fop->m_roi.tag() ? fop->m_roi.tag(): spr->tags().outerTag(frame));
       FilenameInfo fnInfo;
       fnInfo
         .filename(fn)
@@ -546,8 +545,7 @@ FileOp* FileOp::createSaveDocumentOperation(const Context* context,
 
   // Configure output format?
   if (fop->m_format->support(FILE_SUPPORT_GET_FORMAT_OPTIONS)) {
-    base::SharedPtr<FormatOptions> opts =
-      fop->m_format->getFormatOptions(fop.get());
+    auto opts = fop->m_format->askUserForFormatOptions(fop.get());
 
     // Does the user cancelled the operation?
     if (!opts)
@@ -904,7 +902,7 @@ void FileOp::postLoad()
         sprite->pixelFormat() == IMAGE_RGB &&
         sprite->getPalettes().size() <= 1 &&
         sprite->palette(frame_t(0))->isBlack()) {
-      base::SharedPtr<Palette> palette(
+      std::shared_ptr<Palette> palette(
         render::create_palette_from_sprite(
           sprite, frame_t(0), sprite->lastFrame(), true,
           nullptr, nullptr, m_config.newBlend));
@@ -1004,12 +1002,7 @@ void FileOp::postLoad()
   m_document->markAsSaved();
 }
 
-base::SharedPtr<FormatOptions> FileOp::formatOptions() const
-{
-  return m_formatOptions;
-}
-
-void FileOp::setFormatOptions(const base::SharedPtr<FormatOptions>& opts)
+void FileOp::setLoadedFormatOptions(const FormatOptionsPtr& opts)
 {
   ASSERT(!m_formatOptions);
   m_formatOptions = opts;
@@ -1197,6 +1190,7 @@ FileOp::FileOp(FileOpType type,
   , m_createPaletteFromRgba(false)
   , m_ignoreEmpty(false)
   , m_embeddedColorProfile(false)
+  , m_embeddedGridBounds(false)
 {
   if (config)
     m_config = *config;

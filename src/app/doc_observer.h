@@ -24,14 +24,14 @@ namespace app {
     virtual void onGeneralUpdate(DocEvent& ev) { }
 
     virtual void onColorSpaceChanged(DocEvent& ev) { }
-
     virtual void onPixelFormatChanged(DocEvent& ev) { }
+    virtual void onPaletteChanged(DocEvent& ev) { }
 
     virtual void onAddLayer(DocEvent& ev) { }
     virtual void onAddFrame(DocEvent& ev) { }
     virtual void onAddCel(DocEvent& ev) { }
     virtual void onAddSlice(DocEvent& ev) { }
-    virtual void onAddFrameTag(DocEvent& ev) { }
+    virtual void onAddTag(DocEvent& ev) { }
 
     virtual void onBeforeRemoveLayer(DocEvent& ev) { }
     virtual void onAfterRemoveLayer(DocEvent& ev) { }
@@ -39,13 +39,14 @@ namespace app {
     // Called when a frame is removed. It's called after the frame was
     // removed, and the sprite's total number of frames is modified.
     virtual void onRemoveFrame(DocEvent& ev) { }
-    virtual void onRemoveFrameTag(DocEvent& ev) { }
+    virtual void onRemoveTag(DocEvent& ev) { }
     virtual void onRemoveCel(DocEvent& ev) { }
     virtual void onRemoveSlice(DocEvent& ev) { }
 
     virtual void onSpriteSizeChanged(DocEvent& ev) { }
     virtual void onSpriteTransparentColorChanged(DocEvent& ev) { }
     virtual void onSpritePixelRatioChanged(DocEvent& ev) { }
+    virtual void onSpriteGridBoundsChanged(DocEvent& ev) { }
 
     virtual void onLayerNameChange(DocEvent& ev) { }
     virtual void onLayerOpacityChange(DocEvent& ev) { }

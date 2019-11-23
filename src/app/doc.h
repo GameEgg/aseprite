@@ -16,7 +16,6 @@
 #include "base/disable_copying.h"
 #include "base/mutex.h"
 #include "base/rw_lock.h"
-#include "base/shared_ptr.h"
 #include "doc/blend_mode.h"
 #include "doc/color.h"
 #include "doc/document.h"
@@ -26,6 +25,7 @@
 #include "obs/observable.h"
 #include "os/color_space.h"
 
+#include <memory>
 #include <string>
 
 namespace doc {
@@ -72,6 +72,10 @@ namespace app {
     Context* context() const { return m_ctx; }
     void setContext(Context* ctx);
 
+    // Sets active/running transaction.
+    void setTransaction(Transaction* transaction);
+    Transaction* transaction() { return m_transaction; }
+
     // Returns a high-level API: observable and undoable methods.
     DocApi getApi(Transaction& transaction);
 
@@ -91,6 +95,7 @@ namespace app {
 
     void notifyGeneralUpdate();
     void notifyColorSpaceChanged();
+    void notifyPaletteChanged();
     void notifySpritePixelsModified(Sprite* sprite, const gfx::Region& region, frame_t frame);
     void notifyExposeSpritePixels(Sprite* sprite, const gfx::Region& region);
     void notifyLayerMergedDown(Layer* srcLayer, Layer* targetLayer);
@@ -129,12 +134,13 @@ namespace app {
     //////////////////////////////////////////////////////////////////////
     // Loaded options from file
 
-    void setFormatOptions(const base::SharedPtr<FormatOptions>& format_options);
-    base::SharedPtr<FormatOptions> getFormatOptions() const { return m_format_options; }
+    void setFormatOptions(const FormatOptionsPtr& format_options);
+    FormatOptionsPtr formatOptions() const { return m_format_options; }
 
     //////////////////////////////////////////////////////////////////////
     // Boundaries
 
+    void destroyMaskBoundaries();
     void generateMaskBoundaries(const Mask* mask = nullptr);
 
     const MaskBoundaries* getMaskBoundaries() const {
@@ -206,11 +212,15 @@ namespace app {
     // Undo and redo information about the document.
     std::unique_ptr<DocUndo> m_undo;
 
+    // Current transaction for this document (when this is commit(), a
+    // new undo command is added to m_undo).
+    Transaction* m_transaction;
+
     // Selected mask region boundaries
     std::unique_ptr<doc::MaskBoundaries> m_maskBoundaries;
 
     // Data to save the file in the same format that it was loaded
-    base::SharedPtr<FormatOptions> m_format_options;
+    FormatOptionsPtr m_format_options;
 
     // Extra cel used to draw extra stuff (e.g. editor's pen preview, pixels in movement, etc.)
     ExtraCelRef m_extraCel;

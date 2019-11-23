@@ -15,9 +15,10 @@
 #include "app/cmd/clear_cel.h"
 #include "app/cmd/convert_color_profile.h"
 #include "app/cmd/flatten_layers.h"
-#include "app/cmd/remove_frame_tag.h"
 #include "app/cmd/remove_layer.h"
 #include "app/cmd/remove_slice.h"
+#include "app/cmd/remove_tag.h"
+#include "app/cmd/set_grid_bounds.h"
 #include "app/cmd/set_mask.h"
 #include "app/cmd/set_sprite_size.h"
 #include "app/cmd/set_transparent_color.h"
@@ -38,13 +39,14 @@
 #include "app/transaction.h"
 #include "app/tx.h"
 #include "app/ui/doc_view.h"
+#include "base/convert_to.h"
 #include "base/fs.h"
-#include "doc/frame_tag.h"
 #include "doc/layer.h"
 #include "doc/mask.h"
 #include "doc/palette.h"
 #include "doc/slice.h"
 #include "doc/sprite.h"
+#include "doc/tag.h"
 
 #include <algorithm>
 
@@ -113,7 +115,7 @@ int Sprite_new(lua_State* L)
     if (spec.height() < 1)
       return luaL_error(L, "invalid height value = %d in Sprite()", spec.height());
 
-    std::unique_ptr<Sprite> sprite(Sprite::createBasicSprite(spec, 256));
+    std::unique_ptr<Sprite> sprite(Sprite::MakeStdSprite(spec, 256));
     doc.reset(new Doc(sprite.get()));
     sprite.release();
   }
@@ -143,10 +145,21 @@ int Sprite_resize(lua_State* L)
   size.w = std::max(1, size.w);
   size.h = std::max(1, size.h);
 
-  Doc* doc = static_cast<Doc*>(sprite->document());
-  Tx tx;
-  DocApi(doc, tx).setSpriteSize(doc->sprite(), size.w, size.h);
-  tx.commit();
+  Command* resizeCommand =
+    Commands::instance()->byId(CommandId::SpriteSize());
+
+  // TODO use SpriteSizeParams directly instead of converting back and
+  //      forth between strings.
+  Params params;
+  params.set("ui", "false");
+  params.set("width", base::convert_to<std::string>(size.w).c_str());
+  params.set("height", base::convert_to<std::string>(size.h).c_str());
+
+  app::Context* appCtx = App::instance()->context();
+  auto oldDoc = appCtx->activeDocument();
+  appCtx->setActiveDocument(static_cast<Doc*>(sprite->document()));
+  appCtx->executeCommand(resizeCommand, params);
+  appCtx->setActiveDocument(oldDoc);
   return 0;
 }
 
@@ -490,8 +503,12 @@ int Sprite_newTag(lua_State* L)
   auto sprite = get_docobj<Sprite>(L, 1);
   auto from = get_frame_number_from_arg(L, 2);
   auto to = get_frame_number_from_arg(L, 3);
-  auto tag = new doc::FrameTag(from, to);
-  sprite->frameTags().add(tag);
+  auto tag = new doc::Tag(from, to);
+
+  Tx tx;
+  tx(new cmd::AddTag(sprite, tag));
+  tx.commit();
+
   push_docobj(L, tag);
   return 1;
 }
@@ -499,15 +516,15 @@ int Sprite_newTag(lua_State* L)
 int Sprite_deleteTag(lua_State* L)
 {
   auto sprite = get_docobj<Sprite>(L, 1);
-  auto tag = may_get_docobj<FrameTag>(L, 2);
+  auto tag = may_get_docobj<Tag>(L, 2);
   if (!tag && lua_isstring(L, 2)) {
     const char* tagName = lua_tostring(L, 2);
     if (tagName)
-      tag = sprite->frameTags().getByName(tagName);
+      tag = sprite->tags().getByName(tagName);
   }
   if (tag) {
     Tx tx;
-    tx(new cmd::RemoveFrameTag(sprite, tag));
+    tx(new cmd::RemoveTag(sprite, tag));
     tx.commit();
     return 0;
   }
@@ -719,6 +736,23 @@ int Sprite_get_bounds(lua_State* L)
   return 1;
 }
 
+int Sprite_get_gridBounds(lua_State* L)
+{
+  const auto sprite = get_docobj<Sprite>(L, 1);
+  push_obj<gfx::Rect>(L, sprite->gridBounds());
+  return 1;
+}
+
+int Sprite_set_gridBounds(lua_State* L)
+{
+  auto sprite = get_docobj<Sprite>(L, 1);
+  const gfx::Rect bounds = convert_args_into_rect(L, 2);
+  Tx tx;
+  tx(new cmd::SetGridBounds(sprite, bounds));
+  tx.commit();
+  return 0;
+}
+
 const luaL_Reg Sprite_methods[] = {
   { "__eq", Sprite_eq },
   { "resize", Sprite_resize },
@@ -768,6 +802,7 @@ const Property Sprite_properties[] = {
   { "backgroundLayer", Sprite_get_backgroundLayer, nullptr },
   { "transparentColor", Sprite_get_transparentColor, Sprite_set_transparentColor },
   { "bounds", Sprite_get_bounds, nullptr },
+  { "gridBounds", Sprite_get_gridBounds, Sprite_set_gridBounds },
   { nullptr, nullptr, nullptr }
 };
 

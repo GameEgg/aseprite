@@ -9,6 +9,7 @@
 #include "app/util/wrap_point.h"
 #include "app/util/wrap_value.h"
 #include "doc/blend_funcs.h"
+#include "doc/blend_internals.h"
 #include "doc/image_impl.h"
 #include "doc/layer.h"
 #include "doc/palette.h"
@@ -706,6 +707,16 @@ class ShadingInkProcessing : public DoubleInkProcessing<ShadingInkProcessing<Ima
 public:
   ShadingInkProcessing(ToolLoop* loop) {
   }
+  // To avoid code repetition, we reuse ShadingInkProceessing functions
+  // to process the new added BrushShadingInkProcessing. To accomplish it,
+  // we did nest a code portion from original `processPixel`.
+  // This code portion was named `shadingProcessPixel'.
+  //   i = index of exact match on the shading palette
+  //   src = *m_srcAddress (visible pixel color in the current x,y sprite point)
+  typename ImageTraits::pixel_t shadingProcess(int i, typename ImageTraits::pixel_t src) {
+    // Do nothing (it's specialized for each case)
+  }
+
   void processPixel(int x, int y) {
     // Do nothing (it's specialized for each case)
   }
@@ -721,24 +732,10 @@ public:
     m_left(loop->getMouseButton() == ToolLoop::Left) {
   }
 
-  void processPixel(int x, int y) {
-    color_t src = *m_srcAddress;
-
-    // We cannot use the m_rgbmap->mapColor() function because RgbMaps
-    // are created with findBestfit(), and findBestfit() limits the
-    // returned indexes to [0,255] range (it's mainly used for RGBA ->
-    // Indexed image conversion).
-    int i = m_palette->findExactMatch(rgba_getr(src),
-                                      rgba_getg(src),
-                                      rgba_getb(src),
-                                      rgba_geta(src),
-                                      -1);
-
+  RgbTraits::pixel_t shadingProcess(int i, RgbTraits::pixel_t src) {
     // If we didn't find the exact match.
-    if (i < 0) {
-      *m_dstAddress = src;
-      return;
-    }
+    if (i < 0)
+      return src;
 
     if (m_remap) {
       i = (*m_remap)[i];
@@ -755,8 +752,26 @@ public:
           i = 0;
       }
     }
+    return m_palette->getEntry(i);
+  }
 
-    *m_dstAddress = m_palette->getEntry(i);
+  void processPixel(int x, int y) {
+    color_t src = *m_srcAddress;
+
+    // We cannot use the m_rgbmap->mapColor() function because RgbMaps
+    // are created with findBestfit(), and findBestfit() limits the
+    // returned indexes to [0,255] range (it's mainly used for RGBA ->
+    // Indexed image conversion).
+    int i = m_palette->findExactMatch(rgba_getr(src),
+                                      rgba_getg(src),
+                                      rgba_getb(src),
+                                      rgba_geta(src),
+                                      -1);
+    // If i < 0 we tell to shadingProcess function:
+    // 'We didn't find the exact match, then shadingProcess
+    // shouldn't process the current pixel, instead that,
+    // it has to return src'
+    *m_dstAddress = shadingProcess(i, src);
   }
 
 private:
@@ -776,19 +791,9 @@ public:
     m_left(loop->getMouseButton() == ToolLoop::Left) {
   }
 
-  // Works as the RGBA version
-  void processPixel(int x, int y) {
-    color_t src = *m_srcAddress;
-
-    int i = m_palette->findExactMatch(graya_getv(src),
-                                      graya_getv(src),
-                                      graya_getv(src),
-                                      graya_geta(src),
-                                      -1);
-
+  typename GrayscaleTraits::pixel_t shadingProcess(int i, typename GrayscaleTraits::pixel_t src) {
     if (i < 0) {
-      *m_dstAddress = src;
-      return;
+      return src;
     }
 
     if (m_remap) {
@@ -806,13 +811,23 @@ public:
           i = 0;
       }
     }
-
     color_t rgba = m_palette->getEntry(i);
-    *m_dstAddress = graya(
-      int(255.0 * Hsv(Rgb(rgba_getr(rgba),
-                          rgba_getg(rgba),
-                          rgba_getb(rgba))).value()),
-      rgba_geta(rgba));
+    return graya(int(255.0 * Hsv(Rgb(rgba_getr(rgba),
+                 rgba_getg(rgba),
+                 rgba_getb(rgba))).value()),
+                 rgba_geta(rgba));
+  }
+
+  // Works as the RGBA version
+  void processPixel(int x, int y) {
+    color_t src = *m_srcAddress;
+
+    int i = m_palette->findExactMatch(graya_getv(src),
+                                      graya_getv(src),
+                                      graya_getv(src),
+                                      graya_geta(src),
+                                      -1);
+    *m_dstAddress = shadingProcess(i, src);
   }
 
 private:
@@ -831,10 +846,7 @@ public:
     m_left(loop->getMouseButton() == ToolLoop::Left) {
   }
 
-  void processPixel(int x, int y) {
-    color_t src = *m_srcAddress;
-    int i = src;
-
+  typename IndexedTraits::pixel_t shadingProcess(int i, typename IndexedTraits::pixel_t src) {
     if (m_remap) {
       i = (*m_remap)[i];
     }
@@ -850,8 +862,13 @@ public:
           i = 0;
       }
     }
+    return i;
+  }
 
-    *m_dstAddress = i;
+  void processPixel(int x, int y) {
+    color_t src = *m_srcAddress;
+    int i = src;
+    *m_dstAddress = shadingProcess(i, src);
   }
 
 private:
@@ -1083,13 +1100,13 @@ private:
 };
 
 //////////////////////////////////////////////////////////////////////
-// Brush Ink
+// Brush Ink - Base
 //////////////////////////////////////////////////////////////////////
 
 template<typename ImageTraits>
-class BrushInkProcessing : public DoubleInkProcessing<BrushInkProcessing<ImageTraits>, ImageTraits> {
+class BrushInkProcessingBase : public DoubleInkProcessing<BrushInkProcessingBase<ImageTraits>, ImageTraits> {
 public:
-  BrushInkProcessing(ToolLoop* loop) {
+  BrushInkProcessingBase(ToolLoop* loop) {
     m_fgColor = loop->getPrimaryColor();
     m_bgColor = loop->getSecondaryColor();
     m_palette = get_current_palette();
@@ -1112,11 +1129,21 @@ public:
     }
   }
 
-  void processPixel(int x, int y) {
+  bool preProcessPixel(int x, int y, color_t* result) {
+    // Do nothing
+    return true;
+  }
+
+  // TODO Remove this virtual function in some way. At the moment we
+  //      need it because InkProcessing expects that its Derived
+  //      template parameter has a processPixel() member function.
+  virtual void processPixel(int x, int y) {
     // Do nothing
   }
 
-private:
+  color_t getTransparentColor() { return m_transparentColor; }
+
+protected:
   void alignPixelPoint(int& x, int& y) {
     x = (x - m_u) % m_width;
     y = (y - m_v) % m_height;
@@ -1132,7 +1159,6 @@ private:
   const Image* m_brushMask;
   int m_opacity;
   int m_u, m_v, m_width, m_height;
-
   // When we have a image brush from an INDEXED sprite, we need to know
   // which is the background color in order to translate to transparent color
   // in a RGBA sprite.
@@ -1140,10 +1166,10 @@ private:
 };
 
 template<>
-void BrushInkProcessing<RgbTraits>::processPixel(int x, int y) {
+bool BrushInkProcessingBase<RgbTraits>::preProcessPixel(int x, int y, color_t* result) {
   alignPixelPoint(x, y);
   if (m_brushMask && !get_pixel_fast<BitmapTraits>(m_brushMask, x, y))
-    return;
+    return false;
 
   color_t c;
   switch (m_brushImage->pixelFormat()) {
@@ -1185,16 +1211,17 @@ void BrushInkProcessing<RgbTraits>::processPixel(int x, int y) {
     }
     default:
       ASSERT(false);
-      return;
+      return false;
   }
-  *m_dstAddress = c;
+  *result = c;
+  return true;
 }
 
 template<>
-void BrushInkProcessing<GrayscaleTraits>::processPixel(int x, int y) {
+bool BrushInkProcessingBase<GrayscaleTraits>::preProcessPixel(int x, int y, color_t* result) {
   alignPixelPoint(x, y);
   if (m_brushMask && !get_pixel_fast<BitmapTraits>(m_brushMask, x, y))
-    return;
+    return false;
 
   color_t c;
   switch (m_brushImage->pixelFormat()) {
@@ -1233,16 +1260,17 @@ void BrushInkProcessing<GrayscaleTraits>::processPixel(int x, int y) {
     }
     default:
       ASSERT(false);
-      return;
+      return false;
   }
-  *m_dstAddress = c;
+  *result = c;
+  return true;
 }
 
 template<>
-void BrushInkProcessing<IndexedTraits>::processPixel(int x, int y) {
+bool BrushInkProcessingBase<IndexedTraits>::preProcessPixel(int x, int y, color_t* result) {
   alignPixelPoint(x, y);
   if (m_brushMask && !get_pixel_fast<BitmapTraits>(m_brushMask, x, y))
-    return;
+    return false;
 
   color_t c;
   switch (m_brushImage->pixelFormat()) {
@@ -1271,10 +1299,619 @@ void BrushInkProcessing<IndexedTraits>::processPixel(int x, int y) {
     }
     default:
       ASSERT(false);
+      return false;
+  }
+  if (c != m_transparentColor) {
+    *result = c;
+    return true;
+  }
+  return false;
+}
+
+//////////////////////////////////////////////////////////////////////
+// Brush Ink - Simple ink type
+//////////////////////////////////////////////////////////////////////
+
+template<typename ImageTraits>
+class BrushSimpleInkProcessing : public BrushInkProcessingBase<ImageTraits> {
+public:
+  BrushSimpleInkProcessing(ToolLoop* loop) : BrushInkProcessingBase<ImageTraits>(loop) {
+  }
+
+  void processPixel(int x, int y) override {
+    // Do nothing
+  }
+};
+
+template<>
+void BrushSimpleInkProcessing<RgbTraits>::processPixel(int x, int y) {
+  color_t c;
+  if (preProcessPixel(x, y, &c))
+    *m_dstAddress = c;
+}
+
+template<>
+void BrushSimpleInkProcessing<IndexedTraits>::processPixel(int x, int y) {
+  color_t c;
+  if (preProcessPixel(x, y, &c))
+    *m_dstAddress = c;
+}
+
+template<>
+void BrushSimpleInkProcessing<GrayscaleTraits>::processPixel(int x, int y) {
+  color_t c;
+  if (preProcessPixel(x, y, &c))
+    *m_dstAddress = c;
+}
+
+//////////////////////////////////////////////////////////////////////
+// Brush Ink - Lock Alpha ink type
+//////////////////////////////////////////////////////////////////////
+
+template<typename ImageTraits>
+class BrushLockAlphaInkProcessing : public BrushInkProcessingBase<ImageTraits> {
+public:
+  BrushLockAlphaInkProcessing(ToolLoop* loop) : BrushInkProcessingBase<ImageTraits>(loop) {
+  }
+
+  void processPixel(int x, int y) override {
+    //Do nothing
+  }
+};
+
+template<>
+void BrushLockAlphaInkProcessing<RgbTraits>::processPixel(int x, int y) {
+  color_t c;
+  if (preProcessPixel(x, y, &c))
+    *m_dstAddress = rgba(rgba_getr(c), rgba_getg(c), rgba_getb(c), rgba_geta(*m_srcAddress));
+}
+
+template<>
+void BrushLockAlphaInkProcessing<IndexedTraits>::processPixel(int x, int y) {
+  color_t c;
+  if (preProcessPixel(x, y, &c))
+    if (*m_srcAddress != getTransparentColor())
+      *m_dstAddress = c;
+}
+
+template<>
+void BrushLockAlphaInkProcessing<GrayscaleTraits>::processPixel(int x, int y) {
+  color_t c;
+  if (preProcessPixel(x, y, &c))
+    *m_dstAddress = graya(graya_getv(c), graya_geta(*m_srcAddress));
+}
+
+//////////////////////////////////////////////////////////////////////
+// Brush Ink - Eraser Tool
+//////////////////////////////////////////////////////////////////////
+
+template<typename ImageTraits>
+class BrushEraserInkProcessing : public BrushInkProcessingBase<ImageTraits> {
+public:
+  BrushEraserInkProcessing(ToolLoop* loop) : BrushInkProcessingBase<ImageTraits>(loop) {
+  }
+
+  void processPixel(int x, int y) override {
+    // Do nothing
+  }
+};
+
+template<>
+void BrushEraserInkProcessing<RgbTraits>::processPixel(int x, int y) {
+  alignPixelPoint(x, y);
+  if (m_brushMask && !get_pixel_fast<BitmapTraits>(m_brushMask, x, y))
+    return;
+
+  color_t c;
+  switch (m_brushImage->pixelFormat()) {
+    case IMAGE_RGB: {
+      c = get_pixel_fast<RgbTraits>(m_brushImage, x, y);
+      int t;
+      c = rgba(rgba_getr(*m_srcAddress),
+               rgba_getg(*m_srcAddress),
+               rgba_getb(*m_srcAddress),
+               MUL_UN8(rgba_geta(*m_dstAddress), 255 - rgba_geta(c), t));
+      break;
+    }
+    case IMAGE_INDEXED: {
+      c = get_pixel_fast<IndexedTraits>(m_brushImage, x, y);
+      if (m_transparentColor == c)
+        c = 0;
+      else
+        // TODO m_palette->getEntry(c) does not work because the
+        // m_palette member is loaded the Rgba Palette, NOT the
+        // original Indexed Palette from where m_brushImage belongs.
+        // This conversion can be possible if we load the palette
+        // pointer in m_brush when is created the custom brush in the
+        // Indexed Sprite.
+        c = m_palette->getEntry(c);
+      int t;
+      c = rgba(rgba_getr(*m_srcAddress),
+               rgba_getg(*m_srcAddress),
+               rgba_getb(*m_srcAddress),
+               MUL_UN8(rgba_geta(*m_dstAddress), 255 - rgba_geta(c), t));
+      break;
+    }
+    case IMAGE_GRAYSCALE: {
+      c = get_pixel_fast<GrayscaleTraits>(m_brushImage, x, y);
+      int t;
+      c = rgba(rgba_getr(*m_srcAddress),
+               rgba_getg(*m_srcAddress),
+               rgba_getb(*m_srcAddress),
+               MUL_UN8(rgba_geta(*m_dstAddress), 255 - graya_geta(c), t));
+      break;
+    }
+    case IMAGE_BITMAP: {
+      // TODO In which circuntance is possible this case?
+      c = get_pixel_fast<BitmapTraits>(m_brushImage, x, y);
+      c = c ? m_bgColor : *m_srcAddress;
+      break;
+    }
+    default:
+      ASSERT(false);
       return;
   }
-  if (c != m_transparentColor)
-    *m_dstAddress = c;
+  *m_dstAddress = c;;
+}
+
+template<>
+void BrushEraserInkProcessing<GrayscaleTraits>::processPixel(int x, int y) {
+  alignPixelPoint(x, y);
+  if (m_brushMask && !get_pixel_fast<BitmapTraits>(m_brushMask, x, y))
+    return;
+
+  color_t c;
+  switch (m_brushImage->pixelFormat()) {
+    case IMAGE_RGB: {
+      c = get_pixel_fast<RgbTraits>(m_brushImage, x, y);
+      int t;
+      c = graya(graya_getv(*m_srcAddress),
+                MUL_UN8(graya_geta(*m_dstAddress), 255 - rgba_geta(c), t));
+      break;
+    }
+    case IMAGE_INDEXED: {
+      c = get_pixel_fast<IndexedTraits>(m_brushImage, x, y);
+      if (m_transparentColor == c)
+        c = 0;
+      else
+        // TODO m_palette->getEntry(c) does not work because the
+        // m_palette member is loaded the Graya Palette, NOT the
+        // original Indexed Palette from where m_brushImage belongs.
+        // This conversion can be possible if we load the palette
+        // pointer in m_brush when is created the custom brush in the
+        // Indexed Sprite.
+        c = m_palette->getEntry(c);
+      int t;
+      c = graya(graya_getv(*m_srcAddress),
+                MUL_UN8(graya_geta(*m_dstAddress), 255 - rgba_geta(c), t));
+      break;
+    }
+    case IMAGE_GRAYSCALE: {
+      c = get_pixel_fast<GrayscaleTraits>(m_brushImage, x, y);
+      int t;
+      c = graya(graya_getv(*m_srcAddress),
+                MUL_UN8(graya_geta(*m_dstAddress), 255 - graya_geta(c), t));
+      break;
+    }
+    case IMAGE_BITMAP: {
+      // TODO In which circuntance is possible this case?
+      c = get_pixel_fast<BitmapTraits>(m_brushImage, x, y);
+      c = c ? m_bgColor : *m_srcAddress;
+      break;
+    }
+    default:
+      ASSERT(false);
+      return;
+  }
+  *m_dstAddress = c;
+}
+
+template<>
+void BrushEraserInkProcessing<IndexedTraits>::processPixel(int x, int y) {
+  alignPixelPoint(x, y);
+  if (m_brushMask && !get_pixel_fast<BitmapTraits>(m_brushMask, x, y))
+    return;
+
+  color_t c;
+  switch (m_brushImage->pixelFormat()) {
+    case IMAGE_RGB: {
+      c = get_pixel_fast<RgbTraits>(m_brushImage, x, y);
+      c = m_palette->findBestfit(rgba_getr(c),
+                                 rgba_getg(c),
+                                 rgba_getb(c),
+                                 rgba_geta(c), m_transparentColor);
+      break;
+    }
+    case IMAGE_INDEXED: {
+      c = get_pixel_fast<IndexedTraits>(m_brushImage, x, y);
+      break;
+    }
+    case IMAGE_GRAYSCALE: {
+      c = get_pixel_fast<GrayscaleTraits>(m_brushImage, x, y);
+      c = m_palette->findBestfit(graya_getv(c),
+                                 graya_getv(c),
+                                 graya_getv(c),
+                                 graya_geta(c), 0);
+      break;
+    }
+    case IMAGE_BITMAP: {
+      // TODO In which circuntance is possible this case?
+      c = get_pixel_fast<BitmapTraits>(m_brushImage, x, y);
+      c = c ? m_fgColor: m_bgColor;
+      break;
+    }
+    default:
+      ASSERT(false);
+      return;
+  }
+  if (c != m_transparentColor) {
+    *m_dstAddress = m_transparentColor;
+  }
+}
+
+//////////////////////////////////////////////////////////////////////
+// Brush Ink - Shading ink type
+//////////////////////////////////////////////////////////////////////
+
+template<typename ImageTraits>
+class BrushShadingInkProcessing : public BrushInkProcessingBase<ImageTraits> {
+public:
+  BrushShadingInkProcessing(ToolLoop* loop) : BrushInkProcessingBase<ImageTraits>(loop), m_shading(loop) {
+  }
+
+  typename ImageTraits::pixel_t shadingProcessPixel(int iSrc, int iBrush, color_t initialSrc) {
+    // Do nothing
+  }
+
+  void processPixel(int x, int y) override {
+    // Do nothing
+  }
+
+private:
+    ShadingInkProcessing<ImageTraits> m_shading;
+};
+
+template<>
+RgbTraits::pixel_t BrushShadingInkProcessing<RgbTraits>::shadingProcessPixel(int iSrc, int iBrush, color_t initialSrc) {
+  // If iSrc < 0 , it means:
+  //  'The current pixel, from visible pixel on sprite src, not belongs to the palette,
+  //   then we shouldn't process the current pixel, instead that, it has to return src'
+  // If iBrush < 0 , it means:
+  //  'The current pixel, from the custom brush, not belongs to the palette,
+  //   then we shouldn't process the current pixel, instead that, it has to return src'
+  if (iSrc < 0 ||  iBrush < 0)
+    return initialSrc;
+  return m_shading.shadingProcess(iSrc, initialSrc);
+}
+
+template <>
+void BrushShadingInkProcessing<RgbTraits>::processPixel(int x, int y) {
+  alignPixelPoint(x, y);
+  if (m_brushMask && !get_pixel_fast<BitmapTraits>(m_brushMask, x, y))
+    return;
+
+  RgbTraits::pixel_t c;
+  int iSrc = m_palette->findExactMatch(rgba_getr(*m_srcAddress),
+                                       rgba_getg(*m_srcAddress),
+                                       rgba_getb(*m_srcAddress),
+                                       rgba_geta(*m_srcAddress),
+                                       -1);
+  int iBrush;
+  switch (m_brushImage->pixelFormat()) {
+    case IMAGE_RGB: {
+      c = get_pixel_fast<RgbTraits>(m_brushImage, x, y);
+      iBrush = m_palette->findExactMatch(rgba_getr(c),
+                                         rgba_getg(c),
+                                         rgba_getb(c),
+                                         rgba_geta(c),
+                                         -1);
+      if (rgba_geta(c) != 0 && iBrush > 0)
+        *m_dstAddress = shadingProcessPixel(iSrc, iBrush, *m_srcAddress);
+      break;
+    }
+    case IMAGE_INDEXED: {
+      // TODO m_palette->getEntry(c) does not work because the m_palette member is
+      // loaded the Graya Palette, NOT the original Indexed Palette from where m_brushImage belongs.
+      // This conversion can be possible if we load the palette pointer in m_brush when
+      // is created the custom brush in the Indexed Sprite.
+
+      c = get_pixel_fast<IndexedTraits>(m_brushImage, x, y);
+      if (m_transparentColor != c) {
+        iBrush = 1;
+        *m_dstAddress = shadingProcessPixel(iSrc, iBrush, *m_srcAddress);
+      }
+      break;
+    }
+    case IMAGE_GRAYSCALE: {
+      c = get_pixel_fast<GrayscaleTraits>(m_brushImage, x, y);
+      if (graya_geta(c) != 0) {
+        iBrush = 1;
+        *m_dstAddress = shadingProcessPixel(iSrc, iBrush, *m_srcAddress);
+      }
+      break;
+    }
+    default:
+      ASSERT(false);
+      return;
+  }
+};
+
+template<>
+IndexedTraits::pixel_t BrushShadingInkProcessing<IndexedTraits>::shadingProcessPixel(int iSrc, int iBrush, color_t initialSrc) {
+  return m_shading.shadingProcess(iSrc, initialSrc);
+}
+
+template <>
+void BrushShadingInkProcessing<IndexedTraits>::processPixel(int x, int y) {
+  alignPixelPoint(x, y);
+  if (m_brushMask && !get_pixel_fast<BitmapTraits>(m_brushMask, x, y))
+    return;
+
+  color_t c;
+  int iBrush = 1;
+  int iSrc = *m_srcAddress;
+  switch (m_brushImage->pixelFormat()) {
+    case IMAGE_RGB: {
+      c = get_pixel_fast<RgbTraits>(m_brushImage, x, y);
+      iBrush = m_palette->findExactMatch(rgba_getr(c),
+                                         rgba_getg(c),
+                                         rgba_getb(c),
+                                         rgba_geta(c),
+                                         -1);
+      if (rgba_geta(c) != 0 && iBrush > 0)
+        *m_dstAddress = shadingProcessPixel(iSrc, iBrush, *m_srcAddress);
+      break;
+    }
+    case IMAGE_INDEXED: {
+      // TODO m_palette->getEntry(c) does not work because the m_palette member is
+      // loaded the Graya Palette, NOT the original Indexed Palette from where m_brushImage belongs.
+      // This conversion can be possible if we load the palette pointer in m_brush when
+      // is created the custom brush in the Indexed Sprite.
+
+      c = get_pixel_fast<IndexedTraits>(m_brushImage, x, y);
+      if (m_transparentColor != c) {
+        iBrush = 1;
+        *m_dstAddress = shadingProcessPixel(iSrc, iBrush, *m_srcAddress);
+      }
+      break;
+    }
+    case IMAGE_GRAYSCALE: {
+      c = get_pixel_fast<GrayscaleTraits>(m_brushImage, x, y);
+      if (graya_geta(c) != 0) {
+        iBrush = 1;
+        *m_dstAddress = shadingProcessPixel(iSrc, iBrush, *m_srcAddress);
+      }
+      break;
+    }
+    default:
+      ASSERT(false);
+      return;
+  }
+};
+
+template<>
+GrayscaleTraits::pixel_t BrushShadingInkProcessing<GrayscaleTraits>::shadingProcessPixel(int iSrc, int iBrush, color_t initialSrc) {
+  // If iSrc < 0 , it means:
+  //  'The current pixel, from visible pixel on sprite src, not belongs to the palette,
+  //   then we shouldn't process the current pixel, instead that, it has to return src'
+  // If iBrush < 0 , it means:
+  //  'The current pixel, from the custom brush, not belongs to the palette,
+  //   then we shouldn't process the current pixel, instead that, it has to return src'
+  if (iSrc < 0 ||  iBrush < 0)
+    return initialSrc;
+  return m_shading.shadingProcess(iSrc, initialSrc);
+}
+
+template <>
+void BrushShadingInkProcessing<GrayscaleTraits>::processPixel(int x, int y) {
+  alignPixelPoint(x, y);
+  if (m_brushMask && !get_pixel_fast<BitmapTraits>(m_brushMask, x, y))
+    return;
+
+  int iBrush = -1;
+  GrayscaleTraits::pixel_t greyValue = graya_getv(*m_srcAddress);
+  int iSrc = m_palette->findExactMatch(greyValue,
+                                       greyValue,
+                                       greyValue,
+                                       graya_geta(*m_srcAddress),
+                                       -1);
+  switch (m_brushImage->pixelFormat()) {
+    case IMAGE_RGB: {
+      RgbTraits::pixel_t c;
+      c = get_pixel_fast<RgbTraits>(m_brushImage, x, y);
+      iBrush = m_palette->findExactMatch(rgba_getr(c),
+                                         rgba_getg(c),
+                                         rgba_getb(c),
+                                         rgba_geta(c),
+                                         -1);
+      if (rgba_geta(c) != 0 && iBrush > 0)
+        *m_dstAddress = shadingProcessPixel(iSrc, iBrush, *m_srcAddress);
+      break;
+    }
+    case IMAGE_INDEXED: {
+      // TODO m_palette->getEntry(c) does not work because the m_palette member is
+      // loaded the Graya Palette, NOT the original Indexed Palette from where m_brushImage belongs.
+      // This conversion can be possible if we load the palette pointer in m_brush when
+      // is created the custom brush in the Indexed Sprite.
+      IndexedTraits::pixel_t c;
+      c = get_pixel_fast<IndexedTraits>(m_brushImage, x, y);
+      if (m_transparentColor != c) {
+        iBrush = 1;
+        *m_dstAddress = shadingProcessPixel(iSrc, iBrush, *m_srcAddress);
+      }
+      break;
+    }
+    case IMAGE_GRAYSCALE: {
+      GrayscaleTraits::pixel_t c;
+      c = get_pixel_fast<GrayscaleTraits>(m_brushImage, x, y);
+      if (graya_geta(c) != 0) {
+        iBrush = 1;
+        *m_dstAddress = shadingProcessPixel(iSrc, iBrush, *m_srcAddress);
+      }
+      break;
+    }
+    default:
+      ASSERT(false);
+      return;
+  }
+};
+
+//////////////////////////////////////////////////////////////////////
+// Brush Ink - Copy Alpha+Color ink type
+//////////////////////////////////////////////////////////////////////
+
+template<typename ImageTraits>
+class BrushCopyInkProcessing : public BrushInkProcessingBase<ImageTraits> {
+public:
+  BrushCopyInkProcessing(ToolLoop* loop) : BrushInkProcessingBase<ImageTraits>(loop) {
+  }
+
+  void processPixel(int x, int y) override {
+    //Do nothing
+  }
+};
+
+template<>
+void BrushCopyInkProcessing<RgbTraits>::processPixel(int x, int y) {
+  alignPixelPoint(x, y);
+  if (m_brushMask && !get_pixel_fast<BitmapTraits>(m_brushMask, x, y))
+    return;
+
+  color_t c;
+  switch (m_brushImage->pixelFormat()) {
+    case IMAGE_RGB: {
+      c = get_pixel_fast<RgbTraits>(m_brushImage, x, y);
+      if (rgba_geta(c) == 0)
+        return;
+      break;
+    }
+    case IMAGE_INDEXED: {
+      // TODO m_palette->getEntry(c) does not work because the m_palette member is
+      // loaded the Graya Palette, NOT the original Indexed Palette from where m_brushImage belongs.
+      // This conversion can be possible if we load the palette pointer in m_brush when
+      // is created the custom brush in the Indexed Sprite.
+      c = get_pixel_fast<IndexedTraits>(m_brushImage, x, y);
+      if (c == m_transparentColor) {
+        *m_dstAddress = *m_srcAddress;
+        return;
+      }
+      c = m_palette->getEntry(c);
+      break;
+    }
+    case IMAGE_GRAYSCALE: {
+      c = get_pixel_fast<GrayscaleTraits>(m_brushImage, x, y);
+      if (graya_geta(c) == 0)
+        return;
+      c = rgba(graya_getv(c), graya_getv(c), graya_getv(c), graya_geta(c));
+      break;
+    }
+    case IMAGE_BITMAP: {
+      // TODO In which circuntance is possible this case?
+      c = get_pixel_fast<BitmapTraits>(m_brushImage, x, y);
+      c = c ? m_fgColor: m_bgColor;
+      break;
+    }
+    default:
+      ASSERT(false);
+      return;
+  }
+  *m_dstAddress = c;
+}
+
+template<>
+void BrushCopyInkProcessing<IndexedTraits>::processPixel(int x, int y) {
+  alignPixelPoint(x, y);
+  if (m_brushMask && !get_pixel_fast<BitmapTraits>(m_brushMask, x, y))
+    return;
+
+  color_t c;
+  switch (m_brushImage->pixelFormat()) {
+    case IMAGE_RGB: {
+      c = get_pixel_fast<RgbTraits>(m_brushImage, x, y);
+      if (rgba_geta(c) == 0)
+        return;
+      c = m_palette->findBestfit(rgba_getr(c), rgba_getg(c), rgba_getb(c), rgba_geta(c), 0);
+      if (c == 0)
+        c = *m_srcAddress;
+      break;
+    }
+    case IMAGE_INDEXED: {
+      c = get_pixel_fast<IndexedTraits>(m_brushImage, x, y);
+      if (c == m_transparentColor)
+        c = *m_srcAddress;
+      break;
+    }
+    case IMAGE_GRAYSCALE: {
+      c = get_pixel_fast<GrayscaleTraits>(m_brushImage, x, y);
+      if (graya_geta(c) == 0)
+        return;
+      c = m_palette->findBestfit(graya_getv(c),
+                                 graya_getv(c),
+                                 graya_getv(c),
+                                 graya_geta(c), 0);
+      break;
+    }
+    case IMAGE_BITMAP: {
+      // TODO In which circuntance is possible this case?
+      c = get_pixel_fast<BitmapTraits>(m_brushImage, x, y);
+      c = c ? m_fgColor: m_bgColor;
+      break;
+    }
+    default:
+      ASSERT(false);
+      return;
+  }
+  *m_dstAddress = c;
+}
+
+template<>
+void BrushCopyInkProcessing<GrayscaleTraits>::processPixel(int x, int y) {
+  alignPixelPoint(x, y);
+  if (m_brushMask && !get_pixel_fast<BitmapTraits>(m_brushMask, x, y))
+    return;
+
+  color_t c;
+  switch (m_brushImage->pixelFormat()) {
+    case IMAGE_RGB: {
+      c = get_pixel_fast<RgbTraits>(m_brushImage, x, y);
+      if (rgba_geta(c) == 0)
+        return;
+      c = graya(rgba_luma(c), rgba_geta(c));
+      break;
+    }
+    case IMAGE_INDEXED: {
+      // TODO m_palette->getEntry(c) does not work because the
+      // m_palette member is loaded the Graya Palette, NOT the
+      // original Indexed Palette from where m_brushImage belongs.
+      // This conversion can be possible if we load the palette
+      // pointer in m_brush when is created the custom brush in the
+      // Indexed Sprite.
+      c = get_pixel_fast<IndexedTraits>(m_brushImage, x, y);
+      if (c == m_transparentColor) {
+        *m_dstAddress = *m_srcAddress;
+        return;
+      }
+      c = m_palette->getEntry(c);
+      c = graya(rgba_luma(c), rgba_geta(c));
+      break;
+    }
+    case IMAGE_GRAYSCALE: {
+      c = get_pixel_fast<GrayscaleTraits>(m_brushImage, x, y);
+      if (graya_geta(c) == 0)
+        return;
+      break;
+    }
+    case IMAGE_BITMAP: {
+      // TODO In which circuntance is possible this case?
+      c = get_pixel_fast<BitmapTraits>(m_brushImage, x, y);
+      c = c ? m_fgColor: m_bgColor;
+      break;
+    }
+    default:
+      ASSERT(false);
+      return;
+  }
+  *m_dstAddress = c;
 }
 
 //////////////////////////////////////////////////////////////////////

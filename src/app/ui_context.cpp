@@ -28,6 +28,7 @@
 #include "app/ui/workspace_tabs.h"
 #include "base/mutex.h"
 #include "doc/sprite.h"
+#include "ui/system.h"
 
 #include <algorithm>
 
@@ -124,9 +125,10 @@ void UIContext::setActiveView(DocView* docView)
   m_lastSelectedView = docView;
 
   // TODO all the calls to functions like updateUsingEditor(),
-  // setPixelFormat(), app_refresh_screen(), updateDisplayTitleBar()
-  // Can be replaced with a ContextObserver listening to the
-  // onActiveSiteChange() event.
+  // setPixelFormat(), app_refresh_screen(), updateDisplayTitleBar(),
+  // etc. could be replaced with the Transaction class, which is a
+  // DocObserver and handles updates on the screen processing the
+  // observed changes.
   notifyActiveSiteChanged();
 }
 
@@ -163,6 +165,16 @@ void UIContext::onSetActiveFrame(const doc::frame_t frame)
   }
   else if (!isUIAvailable())
     Context::onSetActiveFrame(frame);
+}
+
+void UIContext::onSetSelectedColors(const doc::PalettePicks& picks)
+{
+  if (activeView()) {
+    if (ColorBar* colorBar = ColorBar::instance())
+      colorBar->getPaletteView()->setSelectedEntries(picks);
+  }
+  else if (!isUIAvailable())
+    Context::onSetSelectedColors(picks);
 }
 
 DocView* UIContext::getFirstDocView(Doc* document) const
@@ -226,6 +238,14 @@ Editor* UIContext::activeEditor()
     return NULL;
 }
 
+Editor* UIContext::getEditorFor(Doc* document)
+{
+  if (auto view = getFirstDocView(document))
+    return view->editor();
+  else
+    return nullptr;
+}
+
 bool UIContext::hasClosedDocs()
 {
   return m_closedDocs.hasClosedDocs();
@@ -282,28 +302,32 @@ void UIContext::onRemoveDocument(Doc* doc)
 
 void UIContext::onGetActiveSite(Site* site) const
 {
+  // We can use the activeView only from the UI thread.
+#ifdef _DEBUG
+  if (isUIAvailable())
+    ui::assert_ui_thread();
+#endif
+
   DocView* view = activeView();
   if (view) {
     view->getSite(site);
 
     if (site->sprite()) {
-      // Selected layers
+      // Selected range in the timeline
       Timeline* timeline = App::instance()->timeline();
       if (timeline &&
           timeline->range().enabled()) {
-        switch (timeline->range().type()) {
-          case DocRange::kCels:   site->focus(Site::InCels); break;
-          case DocRange::kFrames: site->focus(Site::InFrames); break;
-          case DocRange::kLayers: site->focus(Site::InLayers); break;
-        }
-        site->selectedLayers(timeline->selectedLayers());
-        site->selectedFrames(timeline->selectedFrames());
+        site->range(timeline->range());
       }
       else {
         ColorBar* colorBar = ColorBar::instance();
         if (colorBar &&
             colorBar->getPaletteView()->getSelectedEntriesCount() > 0) {
           site->focus(Site::InColorBar);
+
+          doc::PalettePicks picks;
+          colorBar->getPaletteView()->getSelectedEntries(picks);
+          site->selectedColors(picks);
         }
         else {
           site->focus(Site::InEditor);

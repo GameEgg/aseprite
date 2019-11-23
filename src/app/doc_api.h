@@ -17,8 +17,11 @@
 #include "doc/image_ref.h"
 #include "gfx/rect.h"
 
+#include <map>
+
 namespace doc {
   class Cel;
+  class CelData;
   class Image;
   class Layer;
   class LayerGroup;
@@ -55,7 +58,7 @@ namespace app {
     void addEmptyFrame(Sprite* sprite, frame_t newFrame);
     void addEmptyFramesTo(Sprite* sprite, frame_t newFrame);
     void copyFrame(Sprite* sprite,
-                   const frame_t fromFrame,
+                   frame_t fromFrame,
                    const frame_t newFrame,
                    const DropFramePlace dropFramePlace,
                    const TagsHandling tagsHandling);
@@ -82,10 +85,8 @@ namespace app {
       LayerImage* dstLayer, frame_t dstFrame);
     void copyCel(
       LayerImage* srcLayer, frame_t srcFrame,
-      LayerImage* dstLayer, frame_t dstFrame);
-    void copyCel(
-      LayerImage* srcLayer, frame_t srcFrame,
-      LayerImage* dstLayer, frame_t dstFrame, bool continuous);
+      LayerImage* dstLayer, frame_t dstFrame,
+      const bool* forceContinuous = nullptr);
     void swapCel(
       LayerImage* layer, frame_t frame1, frame_t frame2);
 
@@ -125,14 +126,38 @@ namespace app {
                  const bool trimOutside);
     void setCelFramePosition(Cel* cel, frame_t frame);
     void moveFrameLayer(Layer* layer, frame_t frame, frame_t beforeFrame);
-    void adjustFrameTags(Sprite* sprite,
-                         const frame_t frame,
-                         const frame_t delta,
-                         const DropFramePlace dropFramePlace,
-                         const TagsHandling tagsHandling);
+    void adjustTags(Sprite* sprite,
+                    const frame_t frame,
+                    const frame_t delta,
+                    const DropFramePlace dropFramePlace,
+                    const TagsHandling tagsHandling);
+
+    class HandleLinkedCels {
+    public:
+      HandleLinkedCels(
+        DocApi& api,
+        doc::LayerImage* srcLayer, const doc::frame_t srcFrame,
+        doc::LayerImage* dstLayer, const doc::frame_t dstFrame);
+      ~HandleLinkedCels();
+      bool linkWasCreated() { return m_created; }
+    private:
+      DocApi& m_api;
+      doc::ObjectId m_srcDataId;
+      doc::Layer* m_dstLayer;
+      doc::frame_t m_dstFrame;
+      bool m_created;
+    };
+
+    bool copyFromLinkedCels(Cel** srcCel,
+                            doc::ObjectId& srcDataId);
 
     Doc* m_document;
     Transaction& m_transaction;
+
+    // Map used in copyCel() to re-create the original set of linked
+    // cels from the src layers when we copy a block of cels.
+    // map: ObjectId of CelData -> Cel*
+    std::map<doc::ObjectId, doc::Cel*> m_linkedCels;
   };
 
 } // namespace app

@@ -1,4 +1,5 @@
 // Aseprite
+// Copyright (C) 2019  Igara Studio S.A.
 // Copyright (C) 2001-2018  David Capello
 //
 // This program is distributed under the terms of
@@ -9,7 +10,9 @@
 #pragma once
 
 #include "app/commands/filters/cels_target.h"
+#include "app/context_access.h"
 #include "app/site.h"
+#include "app/tx.h"
 #include "base/exception.h"
 #include "doc/image_impl.h"
 #include "doc/image_ref.h"
@@ -38,7 +41,6 @@ namespace app {
   class Context;
   class Doc;
   class Editor;
-  class Transaction;
 
   using namespace filters;
 
@@ -76,16 +78,18 @@ namespace app {
 
     void setProgressDelegate(IProgressDelegate* progressDelegate);
 
-    doc::PixelFormat pixelFormat() const;
-
     void setTarget(Target target);
     void setCelsTarget(CelsTarget celsTarget);
 
     void begin();
+#ifdef ENABLE_UI
     void beginForPreview();
+#endif
     void end();
     bool applyStep();
     void applyToTarget();
+
+    void initTransaction();
     bool isTransaction() const;
     void commitTransaction();
 
@@ -96,12 +100,14 @@ namespace app {
     doc::Image* destinationImage() const { return m_dst.get(); }
     gfx::Point position() const { return gfx::Point(0, 0); }
 
+#ifdef ENABLE_UI
     // Updates the current editor to show the progress of the preview.
     void flush();
-
     void disablePreview();
+#endif
 
     // FilterManager implementation
+    doc::PixelFormat pixelFormat() const override;
     const void* getSourceAddress() override;
     void* getDestinationAddress() override;
     int getWidth() override { return m_bounds.w; }
@@ -130,16 +136,23 @@ namespace app {
     // modifies the palette).
     bool paletteHasChanged();
     void restoreSpritePalette();
-    void redrawColorPalette();
+    void applyToPaletteIfNeeded();
 
-    Context* m_context;
-    Site m_site;
+#ifdef ENABLE_UI
+    void redrawColorPalette();
+#endif
+
+    ContextReader m_reader;
+    std::unique_ptr<ContextWriter> m_writer;
+    Site& m_site;
     Filter* m_filter;
     doc::Cel* m_cel;
     doc::ImageRef m_src;
     doc::ImageRef m_dst;
     int m_row;
+#ifdef ENABLE_UI
     int m_nextRowToFlush;
+#endif
     gfx::Rect m_bounds;
     doc::Mask* m_mask;
     std::unique_ptr<doc::Mask> m_previewMask;
@@ -149,7 +162,7 @@ namespace app {
     Target m_target;              // Filtered targets
     CelsTarget m_celsTarget;
     std::unique_ptr<doc::Palette> m_oldPalette;
-    std::unique_ptr<Transaction> m_transaction;
+    std::unique_ptr<Tx> m_tx;
 
     // Hooks
     float m_progressBase;

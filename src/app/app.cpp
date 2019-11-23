@@ -215,7 +215,7 @@ App::App(AppMod* mod)
   m_instance = this;
 }
 
-void App::initialize(const AppOptions& options)
+int App::initialize(const AppOptions& options)
 {
 #ifdef ENABLE_UI
   m_isGui = options.startUI() && !options.previewCLI();
@@ -231,6 +231,9 @@ void App::initialize(const AppOptions& options)
     os::instance()->useWintabAPI(false);
   }
 #endif
+
+  os::instance()->setAppMode(m_isGui ? os::AppMode::GUI:
+                                       os::AppMode::CLI);
 
   if (m_isGui)
     m_uiSystem.reset(new ui::UISystem);
@@ -316,10 +319,13 @@ void App::initialize(const AppOptions& options)
       delegate.reset(new DefaultCliDelegate);
 
     CliProcessor cli(delegate.get(), options);
-    cli.process(&m_modules->m_context);
+    int code = cli.process(&m_modules->m_context);
+    if (code != 0)
+      return code;
   }
 
   os::instance()->finishLaunching();
+  return 0;
 }
 
 void App::run()
@@ -368,10 +374,11 @@ void App::run()
       os::instance()->activateApp();
 #endif
 
-#if ENABLE_DEVMODE
+#if defined(_DEBUG) || defined(ENABLE_DEVMODE)
     // On OS X, when we compile Aseprite on devmode, we're using it
     // outside an app bundle, so we must active the app explicitly.
-    os::instance()->activateApp();
+    if (isGui())
+      os::instance()->activateApp();
 #endif
 
 #ifdef ENABLE_UPDATER
@@ -639,26 +646,18 @@ InputChain& App::inputChain()
 }
 #endif
 
-void app_update_current_palette()
-{
-#ifdef ENABLE_UI
-  Context* context = UIContext::instance();
-  ASSERT(context != NULL);
-
-  Site site = context->activeSite();
-
-  if (Palette* pal = site.palette())
-    set_current_palette(pal, false);
-  else
-    set_current_palette(nullptr, false);
-#endif // ENABLE_UI
-}
-
 // Updates palette and redraw the screen.
 void app_refresh_screen()
 {
 #ifdef ENABLE_UI
-  app_update_current_palette();
+  Context* ctx = UIContext::instance();
+  ASSERT(ctx != NULL);
+
+  Site site = ctx->activeSite();
+  if (Palette* pal = site.palette())
+    set_current_palette(pal, false);
+  else
+    set_current_palette(nullptr, false);
 
   // Invalidate the whole screen.
   ui::Manager::getDefault()->invalidate();
